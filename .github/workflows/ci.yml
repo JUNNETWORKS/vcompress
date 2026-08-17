@@ -37,3 +37,40 @@ jobs:
           ffmpeg -version
           ffmpeg -hide_banner -encoders 2>&1 | grep libx265
       - run: go test -tags=integration ./internal/processor -run TestIntegrationMPEG4ToHEVC -v
+
+  release:
+    # Publish a rolling "latest" release only for green pushes to main.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [unit, vet-and-integration]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-latest
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Cross-compile release binaries
+        run: ./scripts/build-dist.sh dist
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum vcompress_* > SHA256SUMS.txt
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The tag is mutable, so drop the previous release to avoid stale assets.
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/* \
+            --target "$GITHUB_SHA" \
+            --title "latest (${GITHUB_SHA:0:7})" \
+            --prerelease \
+            --notes "Automated build of \`main\` @ ${GITHUB_SHA}.
+
+          Requires \`ffmpeg\` and \`ffprobe\` (with the \`libx265\` encoder) in \`PATH\` at runtime.
+          Verify a download with \`sha256sum -c SHA256SUMS.txt\`."

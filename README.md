@@ -23,6 +23,20 @@ It converts selected legacy/delivery codecs to HEVC/x265 only when a short, repr
 - `ffmpeg` and `ffprobe` available in `PATH` at runtime.
 - FFmpeg must include the `libx265` encoder.
 
+## Download
+
+Every green push to `main` republishes the `latest` pre-release with binaries built by CI:
+
+```text
+vcompress_linux_amd64
+vcompress_linux_arm64
+vcompress_windows_amd64.exe
+vcompress_darwin_arm64
+SHA256SUMS.txt
+```
+
+The `latest` tag is mutable, so it always points at the newest `main` commit. Verify a download with `sha256sum -c SHA256SUMS.txt`. FFmpeg is still a runtime requirement; it is not bundled.
+
 ## Build
 
 Linux:
@@ -134,3 +148,5 @@ internal/logging/       console + file logger
 ## CI
 
 `.github/workflows/ci.yml` runs unit tests and builds on both Ubuntu and Windows. A separate Ubuntu job runs `go vet` plus the real FFmpeg/libx265 integration test.
+
+A third job publishes the `latest` pre-release, but only for pushes to `main` and only after both test jobs pass. It cross-compiles with `scripts/build-dist.sh`, the same script `mise run dist` uses locally.

@@ -19,6 +19,10 @@ description = "Cross-compile a Windows binary"
 run = "go build -o vcompress.exe ./cmd/vcompress"
 env = { GOOS = "windows", GOARCH = "amd64" }
 
+[tasks.dist]
+description = "Cross-compile the same artifacts the CI release job publishes, into dist/"
+run = "./scripts/build-dist.sh dist"
+
 [tasks.test]
 description = "Run unit tests (no FFmpeg required)"
 run = "go test ./..."

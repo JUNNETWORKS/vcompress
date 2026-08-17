@@ -1,4 +1,5 @@
 # Build output
+/dist/
 /vcompress
 /vcompress.exe
 *.exe
@@ -20,6 +21,9 @@ ffmpeg-compress.log
 mise.local.toml
 .mise.local.toml
 .mise/
+
+# Local agent/tooling scratch state
+.agent/
 
 # Editor / IDE
 .idea/
