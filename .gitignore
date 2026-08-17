@@ -22,13 +22,18 @@ mise.local.toml
 .mise.local.toml
 .mise/
 
-# Local agent/tooling scratch state
-.agent/
+# Local agent/tooling scratch state, except the committed ExecPlan documents
+.agent/*
+!.agent/PLANS.md
+!.agent/plans/
 
 # Editor / IDE
 .idea/
 .vscode/
 *.swp
+
+# Agent tooling local overrides (.claude/commands and AGENTS.md are committed)
+.claude/settings.local.json
 
 # macOS / Windows
 .DS_Store

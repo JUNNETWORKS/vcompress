@@ -145,6 +145,21 @@ internal/processor/     per-file orchestration and safety gates
 internal/logging/       console + file logger
 ```
 
+## Development plans (ExecPlans)
+
+Complex features and significant refactors are designed as **ExecPlans**:
+self-contained, living design documents that carry the work from design through
+implementation to retrospective.
+
+- `.agent/PLANS.md` defines the format, the required sections and the rules.
+- `.agent/plans/TEMPLATE.md` is the starting point; plans land in
+  `.agent/plans/YYYY-MM-DD-short-slug.md` and are committed.
+- `AGENTS.md` points coding agents at the same workflow. With Claude Code,
+  `/execplan <task>` writes a plan and `/execplan-run [path]` executes or
+  resumes one.
+
+Small, self-contained changes do not need a plan.
+
 ## CI
 
 `.github/workflows/ci.yml` runs unit tests and builds on both Ubuntu and Windows. A separate Ubuntu job runs `go vet` plus the real FFmpeg/libx265 integration test.
