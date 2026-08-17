@@ -1,0 +1,31 @@
+# Build output
+/vcompress
+/vcompress.exe
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+
+# Go test/coverage artifacts
+*.out
+coverage.txt
+coverage.html
+
+# Runtime artifacts
+ffmpeg-compress.log
+.*.ffmpeg-compressing-*
+
+# mise local overrides (mise.toml itself is committed)
+mise.local.toml
+.mise.local.toml
+.mise/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+
+# macOS / Windows
+.DS_Store
+Thumbs.db

@@ -1,0 +1,40 @@
+[tools]
+go = "1.26"
+
+[env]
+# Pin the toolchain so builds match CI instead of silently downloading another Go.
+GOTOOLCHAIN = "local"
+
+[tasks.build]
+description = "Build the vcompress binary for the host platform"
+run = "go build -o vcompress ./cmd/vcompress"
+
+[tasks.build-linux]
+description = "Cross-compile a Linux binary"
+run = "go build -o vcompress ./cmd/vcompress"
+env = { GOOS = "linux", GOARCH = "amd64" }
+
+[tasks.build-windows]
+description = "Cross-compile a Windows binary"
+run = "go build -o vcompress.exe ./cmd/vcompress"
+env = { GOOS = "windows", GOARCH = "amd64" }
+
+[tasks.test]
+description = "Run unit tests (no FFmpeg required)"
+run = "go test ./..."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.fmt]
+description = "Format all Go sources"
+run = "go fmt ./..."
+
+[tasks.check]
+description = "Unit tests plus static analysis, as CI runs them"
+depends = ["test", "vet"]
+
+[tasks.test-integration]
+description = "Integration test using real FFmpeg/libx265 (ffmpeg/ffprobe must be in PATH)"
+run = "go test -tags=integration ./internal/processor -run TestIntegrationMPEG4ToHEVC -v"

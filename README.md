@@ -19,7 +19,7 @@ It converts selected legacy/delivery codecs to HEVC/x265 only when a short, repr
 
 ## Requirements
 
-- Go 1.22+ to build.
+- Go 1.26+ to build.
 - `ffmpeg` and `ffprobe` available in `PATH` at runtime.
 - FFmpeg must include the `libx265` encoder.
 
