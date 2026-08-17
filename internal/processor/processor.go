@@ -1,0 +1,231 @@
+package processor
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"reflect"
+
+	"vcompress/internal/config"
+	ff "vcompress/internal/ffmpeg"
+	"vcompress/internal/fsutil"
+	"vcompress/internal/media"
+	"vcompress/internal/quality"
+)
+
+type Logger interface {
+	Printf(format string, args ...any)
+}
+
+type MediaClient interface {
+	Probe(ctx context.Context, path string) (media.Info, error)
+	Encode(ctx context.Context, o ff.EncodeOptions) error
+	FullDecode(ctx context.Context, path string, ordinal int) error
+}
+
+type Selector interface {
+	Select(ctx context.Context, input string, ordinal int, pixFmt string, duration float64) (quality.Result, error)
+}
+
+type Processor struct {
+	Config   config.Config
+	Media    MediaClient
+	Selector Selector
+	Logger   Logger
+}
+
+type Status int
+
+const (
+	StatusConverted Status = iota
+	StatusSkipped
+	StatusFailed
+)
+
+type Result struct {
+	Status     Status
+	SavedBytes int64
+}
+
+func (p *Processor) Process(ctx context.Context, input string) Result {
+	info, err := p.Media.Probe(ctx, input)
+	if err != nil {
+		p.log("SKIP: could not probe main video: %s | %v", input, err)
+		return Result{Status: StatusSkipped}
+	}
+
+	switch PolicyForCodec(info.Video.CodecName) {
+	case SkipEfficient:
+		p.log("SKIP: already efficient codec (%s): %s", info.Video.CodecName, input)
+		return Result{Status: StatusSkipped}
+	case SkipArchivalOrUnknown:
+		p.log("SKIP: archival/intermediate/unknown codec (%s): %s", info.Video.CodecName, input)
+		return Result{Status: StatusSkipped}
+	}
+	if info.Video.HDR {
+		p.log("SKIP: HDR/HDR-metadata detected; preserving original untouched: %s", input)
+		return Result{Status: StatusSkipped}
+	}
+	if info.Duration <= 0 {
+		p.log("SKIP: duration is unknown/invalid: %s", input)
+		return Result{Status: StatusSkipped}
+	}
+
+	paths, err := fsutil.PlanOutput(input)
+	if err != nil {
+		p.log("FAILED: cannot plan output: %s | %v", input, err)
+		return Result{Status: StatusFailed}
+	}
+	defer os.Remove(paths.Temp)
+
+	if paths.Final != input {
+		if _, err := os.Stat(paths.Final); err == nil {
+			p.log("SKIP: target already exists, refusing to overwrite: %s", paths.Final)
+			return Result{Status: StatusSkipped}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			p.log("FAILED: cannot inspect target path: %s | %v", paths.Final, err)
+			return Result{Status: StatusFailed}
+		}
+	}
+
+	st, err := os.Stat(input)
+	if err != nil {
+		p.log("FAILED: stat source: %s | %v", input, err)
+		return Result{Status: StatusFailed}
+	}
+	originalSize := st.Size()
+	p.log("PROCESS: %s | codec=%s pix_fmt=%s %dx%d fps=%s bitrate=%d size=%s",
+		input, info.Video.CodecName, info.Video.PixFmt, info.Video.Width, info.Video.Height,
+		info.Video.AvgFrameRate, info.Video.BitRate, fsutil.HumanSize(originalSize))
+
+	selected, err := p.Selector.Select(ctx, input, info.Video.Ordinal, info.Video.PixFmt, info.Duration)
+	if err != nil {
+		p.log("FAILED: CRF analysis could not be completed safely: %s | %v", input, err)
+		return Result{Status: StatusFailed}
+	}
+	if !selected.Found {
+		p.log("KEEP ORIGINAL: even CRF 16 did not meet SSIM thresholds: %s", input)
+		return Result{Status: StatusSkipped}
+	}
+	p.log("CRF-SELECT: crf=%d avg_ssim=%.6f worst_ssim=%.6f", selected.CRF, selected.Average, selected.Worst)
+
+	if p.Config.DryRun {
+		p.log("DRY-RUN: selected CRF %d; would encode to %s", selected.CRF, paths.Final)
+		return Result{Status: StatusSkipped}
+	}
+
+	if err := p.Media.Encode(ctx, ff.EncodeOptions{
+		Input:      input,
+		Output:     paths.Temp,
+		Ordinal:    info.Video.Ordinal,
+		PixFmt:     info.Video.PixFmt,
+		Preset:     p.Config.Preset,
+		CRF:        selected.CRF,
+		ColorRange: info.Video.ColorRange,
+		ColorSpace: info.Video.ColorSpace,
+		ColorTrc:   info.Video.ColorTransfer,
+		ColorPrim:  info.Video.ColorPrimaries,
+	}); err != nil {
+		p.log("FAILED: ffmpeg encode/mux failed: %s | %v", input, err)
+		return Result{Status: StatusFailed}
+	}
+
+	if err := p.validate(ctx, paths.Temp, info); err != nil {
+		p.log("VALIDATION FAILED: %s | %v", input, err)
+		return Result{Status: StatusFailed}
+	}
+
+	outStat, err := os.Stat(paths.Temp)
+	if err != nil {
+		p.log("FAILED: stat output: %s | %v", paths.Temp, err)
+		return Result{Status: StatusFailed}
+	}
+	newSize := outStat.Size()
+	if newSize >= originalSize {
+		p.log("KEEP ORIGINAL: output is not smaller (%s -> %s)", fsutil.HumanSize(originalSize), fsutil.HumanSize(newSize))
+		return Result{Status: StatusSkipped}
+	}
+	pct := fsutil.SavingsPercent(originalSize, newSize)
+	if pct < p.Config.MinSavings {
+		p.log("KEEP ORIGINAL: only %.1f%% smaller; threshold is %.1f%%", pct, p.Config.MinSavings)
+		return Result{Status: StatusSkipped}
+	}
+
+	_ = os.Chmod(paths.Temp, st.Mode().Perm())
+	_ = os.Chtimes(paths.Temp, st.ModTime(), st.ModTime())
+
+	if paths.Final == input {
+		if err := fsutil.ReplaceFile(paths.Temp, input); err != nil {
+			p.log("FAILED: could not replace source: %s | %v", input, err)
+			return Result{Status: StatusFailed}
+		}
+	} else {
+		if err := os.Rename(paths.Temp, paths.Final); err != nil {
+			p.log("FAILED: could not publish validated output: %s | %v", paths.Final, err)
+			return Result{Status: StatusFailed}
+		}
+		if err := os.Remove(input); err != nil {
+			p.log("WARNING: output created but source could not be removed; both files remain: %s | %s", input, paths.Final)
+			return Result{Status: StatusFailed}
+		}
+	}
+
+	saved := originalSize - newSize
+	p.log("OK: crf=%d ssim_avg=%.6f ssim_worst=%.6f | %s -> %s | saved=%s (%.1f%%) | %s",
+		selected.CRF, selected.Average, selected.Worst,
+		fsutil.HumanSize(originalSize), fsutil.HumanSize(newSize), fsutil.HumanSize(saved), pct, paths.Final)
+	return Result{Status: StatusConverted, SavedBytes: saved}
+}
+
+func (p *Processor) validate(ctx context.Context, out string, in media.Info) error {
+	got, err := p.Media.Probe(ctx, out)
+	if err != nil {
+		return fmt.Errorf("ffprobe cannot read output: %w", err)
+	}
+	if !reflect.DeepEqual(in.StreamCounts, got.StreamCounts) {
+		return fmt.Errorf("stream-type counts changed: %v -> %v", in.StreamCounts, got.StreamCounts)
+	}
+	if in.ChapterCount != got.ChapterCount {
+		return fmt.Errorf("chapter count changed: %d -> %d", in.ChapterCount, got.ChapterCount)
+	}
+	if !media.DurationClose(in.Duration, got.Duration) {
+		return fmt.Errorf("duration changed too much: %.3f -> %.3f", in.Duration, got.Duration)
+	}
+	if got.Video.CodecName != "hevc" {
+		return fmt.Errorf("output codec is %s, expected hevc", got.Video.CodecName)
+	}
+	if in.Video.PixFmt != got.Video.PixFmt {
+		return fmt.Errorf("pixel format changed: %s -> %s", in.Video.PixFmt, got.Video.PixFmt)
+	}
+	if in.Video.Width != got.Video.Width || in.Video.Height != got.Video.Height {
+		return fmt.Errorf("resolution changed: %dx%d -> %dx%d", in.Video.Width, in.Video.Height, got.Video.Width, got.Video.Height)
+	}
+	if !media.FPSClose(in.Video.AvgFrameRate, got.Video.AvgFrameRate) {
+		return fmt.Errorf("frame rate changed: %s -> %s", in.Video.AvgFrameRate, got.Video.AvgFrameRate)
+	}
+	if !media.SameOrUnknown(in.Video.ColorRange, got.Video.ColorRange) {
+		return fmt.Errorf("color_range changed: %s -> %s", in.Video.ColorRange, got.Video.ColorRange)
+	}
+	if !media.SameOrUnknown(in.Video.ColorSpace, got.Video.ColorSpace) {
+		return fmt.Errorf("color_space changed: %s -> %s", in.Video.ColorSpace, got.Video.ColorSpace)
+	}
+	if !media.SameOrUnknown(in.Video.ColorTransfer, got.Video.ColorTransfer) {
+		return fmt.Errorf("color_transfer changed: %s -> %s", in.Video.ColorTransfer, got.Video.ColorTransfer)
+	}
+	if !media.SameOrUnknown(in.Video.ColorPrimaries, got.Video.ColorPrimaries) {
+		return fmt.Errorf("color_primaries changed: %s -> %s", in.Video.ColorPrimaries, got.Video.ColorPrimaries)
+	}
+	if p.Config.FullDecodeCheck {
+		if err := p.Media.FullDecode(ctx, out, in.Video.Ordinal); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *Processor) log(format string, args ...any) {
+	if p.Logger != nil {
+		p.Logger.Printf(format, args...)
+	}
+}
