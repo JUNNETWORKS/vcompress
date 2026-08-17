@@ -1,6 +1,6 @@
 # vcompress
 
-Cross-platform (Windows/Linux) recursive video compressor built around FFmpeg/ffprobe.
+Cross-platform (Windows/Linux/macOS) recursive video compressor built around FFmpeg/ffprobe.
 It converts selected legacy/delivery codecs to HEVC/x265 only when a short, representative SSIM analysis chooses an acceptable CRF from **20 → 18 → 16**, validates the finished output, and confirms that the file is meaningfully smaller.
 
 ## Safety policy
@@ -14,12 +14,13 @@ It converts selected legacy/delivery codecs to HEVC/x265 only when a short, repr
 - Validates stream-type counts, chapters, duration, codec, pixel format, resolution, FPS and color signalling.
 - Performs a full decode check by default.
 - Keeps the source unless the result is at least 5% smaller by default.
-- Uses a same-directory temporary output. Linux replacement is an atomic rename; Windows replacement uses `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`.
+- Uses a same-directory temporary output. Unix replacement (Linux/macOS) is an atomic rename; Windows replacement uses `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`.
+- Keeps the container for `.mp4`, `.m4v`, `.mov` and `.mkv`; any other input container is remuxed to `.mkv` next to the source, and the source is only removed after the new file has passed every check. If that `.mkv` path already exists, the file is skipped instead of overwritten.
 - Processing is intentionally sequential so one x265 encode can use the machine without multiple simultaneous encodes exhausting CPU/RAM.
 
 ## Requirements
 
-- Go 1.26+ to build.
+- Go 1.26 to build (`mise` installs and pins it; `GOTOOLCHAIN=local` keeps builds identical to CI).
 - `ffmpeg` and `ffprobe` available in `PATH` at runtime.
 - FFmpeg must include the `libx265` encoder.
 
@@ -39,7 +40,17 @@ The `latest` tag is mutable, so it always points at the newest `main` commit. Ve
 
 ## Build
 
-Linux:
+This repository uses [`mise`](https://mise.jdx.dev/) (see `mise.toml`), which pins the Go toolchain and provides tasks that mirror CI:
+
+```bash
+mise run build            # host binary
+mise run build-windows    # GOOS=windows GOARCH=amd64
+mise run dist             # all release artifacts into dist/
+```
+
+The equivalent plain `go` commands are below.
+
+Linux/macOS:
 
 ```bash
 go build -o vcompress ./cmd/vcompress
@@ -59,7 +70,7 @@ GOOS=windows GOARCH=amd64 go build -o vcompress.exe ./cmd/vcompress
 
 ## Usage
 
-Linux:
+Linux/macOS:
 
 ```bash
 ./vcompress --dry-run /path/to/videos
@@ -106,6 +117,13 @@ For each eligible file:
 SSIM is an objective proxy, not a mathematical guarantee of perceptual transparency.
 
 ## Tests
+
+What CI gates on, via `mise`:
+
+```bash
+mise run check            # go test ./... plus go vet ./...
+mise run test-integration # real FFmpeg/libx265 round trip
+```
 
 Unit tests (no FFmpeg media generation required):
 
