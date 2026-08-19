@@ -121,6 +121,8 @@ removal behavior.
 - [x] (2026-08-19 14:55Z) Updated `README.md` with the option, naming rules, and no-overwrite behavior.
 - [x] (2026-08-19 14:56Z) Ran formatting, `mise run check`, host and Windows builds, CLI help inspection, and `mise run test-integration` successfully.
 - [x] (2026-08-19 14:56Z) Recorded evidence and retrospective.
+- [x] (2026-08-19 18:04Z) Diagnosed the Windows CI failure as a non-portable hard-coded permission expectation and changed the test to compare the output with the source filesystem's observed permissions.
+- [ ] Re-run local checks, push the focused CI fix, and confirm the GitHub Actions rerun passes.
 
 ## Surprises and discoveries
 
@@ -132,6 +134,15 @@ missing standard-library packages such as `unsafe`. Trusting this repository's
 `mise.toml` and rerunning the repository tasks with approved access resolved
 the environment restriction. The same commands then passed without code
 changes.
+
+Windows GitHub Actions exposed a portability error in the new test rather than
+in publication code. `os.WriteFile(path, data, 0640)` produced a file whose
+observed permissions were `0666` on Windows because Windows does not implement
+Unix permission bits in the same way. The failing assertion said
+`output permissions = 666, want 640`. The behavioral contract is that the
+output inherits the source's permissions as represented by the host
+filesystem, so the test now captures `os.Stat(path).Mode().Perm()` and compares
+the output against that value instead of a Unix-only literal.
 
 ## Decision log
 
@@ -148,6 +159,11 @@ codec-bearing suffix is clearer than silently renaming the source to a backup.
 retained. The compressed output may be smaller in isolation, but keeping both
 files increases rather than reduces current disk use, so counting that size
 difference as reclaimed storage would be misleading.
+
+2026-08-19 — Codex: Verify permission inheritance against the source mode
+observed by the running operating system. A hard-coded Unix mode tests Go's
+platform-specific `os.WriteFile` behavior on Windows rather than vcompress's
+promise to carry source attributes to the output.
 
 ## Artifacts and notes
 
@@ -177,6 +193,16 @@ Both `TestIntegrationMPEG4ToHEVC/replace_source` and
 probed the source as MPEG-4 and the separate output as HEVC. The built CLI's
 `-help` output included `-keep-original` with the expected description.
 
+The first PR run failed only `unit (windows-latest)` with:
+
+```text
+--- FAIL: TestProcessKeepOriginalPublishesBesideSource (0.00s)
+    processor_test.go:141: output permissions = 666, want 640
+```
+
+Ubuntu unit tests, vet and integration tests, and security checks all passed.
+Post-fix rerun evidence will be appended after the PR update.
+
 ## Outcomes and retrospective
 
 The opt-in mode shipped in configuration, CLI parsing, path planning,
@@ -184,4 +210,6 @@ publication, logging, tests, and user documentation. Default behavior remains
 unchanged. In keep-original mode all pre-publication validation and savings
 gates remain active, the source is never replaced or removed, and aggregate
 saved bytes remain zero because no storage was reclaimed. No planned scope was
-left open and the implementation did not diverge from the selected design.
+left open. Windows CI required one test-only portability correction: permission
+inheritance is now checked against the source mode reported by the host instead
+of the Unix-specific literal `0640`; production behavior did not change.

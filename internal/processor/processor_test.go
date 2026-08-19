@@ -110,6 +110,10 @@ func TestProcessKeepOriginalPublishesBesideSource(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o640); err != nil {
 		t.Fatal(err)
 	}
+	sourceStat, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	in := baseInfo("h264")
 	out := baseInfo("hevc")
 	m := &fakeMedia{probe: in, outputProbe: out}
@@ -137,8 +141,8 @@ func TestProcessKeepOriginalPublishesBesideSource(t *testing.T) {
 	if st.Size() != 500 {
 		t.Fatalf("output size = %d, want 500", st.Size())
 	}
-	if st.Mode().Perm() != 0o640 {
-		t.Fatalf("output permissions = %o, want 640", st.Mode().Perm())
+	if st.Mode().Perm() != sourceStat.Mode().Perm() {
+		t.Fatalf("output permissions = %o, want source permissions %o", st.Mode().Perm(), sourceStat.Mode().Perm())
 	}
 	if m.decodeCalls != 1 {
 		t.Fatalf("decodeCalls = %d, want 1", m.decodeCalls)
