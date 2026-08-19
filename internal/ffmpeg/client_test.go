@@ -64,6 +64,9 @@ func TestDetectNVIDIARunsRuntimeProbes(t *testing.T) {
 		case strings.Contains(joined, "-hwaccels"):
 			return []byte("Hardware acceleration methods:\ncuda"), nil, nil
 		case strings.Contains(joined, "-c:v hevc_nvenc"):
+			if !strings.Contains(joined, "color=c=black:s=1920x1080:r=1") {
+				t.Fatalf("NVENC runtime probe uses an unsupported small frame: %s", joined)
+			}
 			return nil, nil, nil
 		case strings.Contains(joined, "-c:v libx265"):
 			return nil, nil, nil

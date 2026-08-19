@@ -157,7 +157,7 @@ func (c *Client) DetectNVIDIA(ctx context.Context) NVIDIACapabilities {
 		caps.NVENCReason = commandFailure("ffmpeg -encoders", err, stderr)
 	} else if strings.Contains(string(stdout)+string(stderr), "hevc_nvenc") {
 		_, probeStderr, probeErr := c.Runner.Run(ctx, c.FFmpeg,
-			"-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=64x64:r=1",
+			"-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=1",
 			"-frames:v", "1", "-an", "-c:v", "hevc_nvenc", "-preset", "p1", "-f", "null", "-",
 		)
 		if probeErr == nil {
@@ -202,7 +202,7 @@ func (c *Client) probeNVDEC(ctx context.Context) (bool, string) {
 }
 
 func commandFailure(operation string, err error, stderr []byte) string {
-	detail := tail(string(stderr), 4)
+	detail := tail(string(stderr), 12)
 	if detail == "" {
 		return fmt.Sprintf("%s failed: %v", operation, err)
 	}
