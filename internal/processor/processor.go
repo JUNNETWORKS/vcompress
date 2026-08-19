@@ -72,7 +72,7 @@ func (p *Processor) Process(ctx context.Context, input string) Result {
 		return Result{Status: StatusSkipped}
 	}
 
-	paths, err := fsutil.PlanOutput(input)
+	paths, err := fsutil.PlanOutput(input, p.Config.KeepOriginal)
 	if err != nil {
 		p.log("FAILED: cannot plan output: %s | %v", input, err)
 		return Result{Status: StatusFailed}
@@ -165,13 +165,21 @@ func (p *Processor) Process(ctx context.Context, input string) Result {
 			p.log("FAILED: could not publish validated output: %s | %v", paths.Final, err)
 			return Result{Status: StatusFailed}
 		}
-		if err := os.Remove(input); err != nil {
-			p.log("WARNING: output created but source could not be removed; both files remain: %s | %s", input, paths.Final)
-			return Result{Status: StatusFailed}
+		if !p.Config.KeepOriginal {
+			if err := os.Remove(input); err != nil {
+				p.log("WARNING: output created but source could not be removed; both files remain: %s | %s", input, paths.Final)
+				return Result{Status: StatusFailed}
+			}
 		}
 	}
 
 	saved := originalSize - newSize
+	if p.Config.KeepOriginal {
+		p.log("OK: crf=%d ssim_avg=%.6f ssim_worst=%.6f | %s -> %s | potential_saving=%s (%.1f%%) | source retained=%s | %s",
+			selected.CRF, selected.Average, selected.Worst,
+			fsutil.HumanSize(originalSize), fsutil.HumanSize(newSize), fsutil.HumanSize(saved), pct, input, paths.Final)
+		return Result{Status: StatusConverted}
+	}
 	p.log("OK: crf=%d ssim_avg=%.6f ssim_worst=%.6f | %s -> %s | saved=%s (%.1f%%) | %s",
 		selected.CRF, selected.Average, selected.Worst,
 		fsutil.HumanSize(originalSize), fsutil.HumanSize(newSize), fsutil.HumanSize(saved), pct, paths.Final)

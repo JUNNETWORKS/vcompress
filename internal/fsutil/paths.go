@@ -12,7 +12,7 @@ type OutputPaths struct {
 	Temp  string
 }
 
-func PlanOutput(input string) (OutputPaths, error) {
+func PlanOutput(input string, keepOriginal bool) (OutputPaths, error) {
 	dir := filepath.Dir(input)
 	ext := filepath.Ext(input)
 	stem := strings.TrimSuffix(filepath.Base(input), ext)
@@ -22,6 +22,9 @@ func PlanOutput(input string) (OutputPaths, error) {
 	outExt := ext
 	switch lowerExt {
 	case ".mp4", ".m4v", ".mov", ".mkv":
+		if keepOriginal {
+			final = filepath.Join(dir, stem+".hevc"+ext)
+		}
 	default:
 		outExt = ".mkv"
 		final = filepath.Join(dir, stem+outExt)

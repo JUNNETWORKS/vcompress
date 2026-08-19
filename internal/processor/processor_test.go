@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -99,6 +100,81 @@ func TestProcessReplacesAfterValidation(t *testing.T) {
 	}
 	if m.decodeCalls != 1 {
 		t.Fatalf("decodeCalls = %d, want 1", m.decodeCalls)
+	}
+}
+
+func TestProcessKeepOriginalPublishesBesideSource(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "source.mp4")
+	original := bytes.Repeat([]byte{0x7f}, 1000)
+	if err := os.WriteFile(path, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	sourceStat, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := baseInfo("h264")
+	out := baseInfo("hevc")
+	m := &fakeMedia{probe: in, outputProbe: out}
+	c := config.Default()
+	c.KeepOriginal = true
+	c.MinSavings = 1
+	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, CRF: 20, Average: 0.999, Worst: 0.998}}}
+
+	got := p.Process(context.Background(), path)
+	if got.Status != StatusConverted || got.SavedBytes != 0 {
+		t.Fatalf("result=%+v, want converted with zero reclaimed bytes", got)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, original) {
+		t.Fatal("source bytes changed with KeepOriginal enabled")
+	}
+	output := filepath.Join(dir, "source.hevc.mp4")
+	st, err := os.Stat(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Size() != 500 {
+		t.Fatalf("output size = %d, want 500", st.Size())
+	}
+	if st.Mode().Perm() != sourceStat.Mode().Perm() {
+		t.Fatalf("output permissions = %o, want source permissions %o", st.Mode().Perm(), sourceStat.Mode().Perm())
+	}
+	if m.decodeCalls != 1 {
+		t.Fatalf("decodeCalls = %d, want 1", m.decodeCalls)
+	}
+}
+
+func TestProcessKeepOriginalRefusesExistingOutput(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "source.mp4")
+	if err := os.WriteFile(path, make([]byte, 1000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(dir, "source.hevc.mp4")
+	existing := []byte("existing output")
+	if err := os.WriteFile(output, existing, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := &fakeMedia{probe: baseInfo("h264")}
+	c := config.Default()
+	c.KeepOriginal = true
+	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, CRF: 20}}}
+
+	got := p.Process(context.Background(), path)
+	if got.Status != StatusSkipped || m.encodeCalls != 0 {
+		t.Fatalf("result=%+v encodeCalls=%d", got, m.encodeCalls)
+	}
+	after, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, existing) {
+		t.Fatal("existing output was modified")
 	}
 }
 

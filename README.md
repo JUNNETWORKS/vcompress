@@ -15,6 +15,7 @@ It converts selected legacy/delivery codecs to HEVC/x265 only when a short, repr
 - Performs a full decode check by default.
 - Keeps the source unless the result is at least 5% smaller by default.
 - Uses a same-directory temporary output. Unix replacement (Linux/macOS) is an atomic rename; Windows replacement uses `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`.
+- With `--keep-original`, publishes the validated output beside the source without replacing or deleting the source. Same-container output uses a `.hevc` suffix, such as `movie.hevc.mp4`.
 - Keeps the container for `.mp4`, `.m4v`, `.mov` and `.mkv`; any other input container is remuxed to `.mkv` next to the source, and the source is only removed after the new file has passed every check. If that `.mkv` path already exists, the file is skipped instead of overwritten.
 - Processing is intentionally sequential so one x265 encode can use the machine without multiple simultaneous encodes exhausting CPU/RAM.
 
@@ -95,12 +96,17 @@ Important options:
 -sample-count 3
 -min-savings 5
 -no-full-decode-check
+-keep-original
 -dry-run
 -ffmpeg <path>
 -ffprobe <path>
 ```
 
 The log is written to `ffmpeg-compress.log` in the selected root directory.
+With `-keep-original`, `movie.mp4` produces `movie.hevc.mp4` and leaves
+`movie.mp4` unchanged. Inputs that require a container change, such as
+`movie.avi`, produce `movie.mkv` and likewise retain the source. An existing
+destination is never overwritten.
 
 ## Automatic CRF selection
 
