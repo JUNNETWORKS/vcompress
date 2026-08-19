@@ -1,8 +1,16 @@
 package ffmpeg
 
 import (
+	"context"
+	"strings"
 	"testing"
 )
+
+type runnerFunc func(ctx context.Context, name string, args ...string) ([]byte, []byte, error)
+
+func (f runnerFunc) Run(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+	return f(ctx, name, args...)
+}
 
 func TestParseSSIM(t *testing.T) {
 	input := []byte(`x265 [info]: encoded 100 frames in 1.00s, 100.00 fps, 1000.00 kb/s, Avg QP:22.00, Global PSNR: 45.0, SSIM Mean Y: 0.9971234 (25.4 dB)`)
@@ -12,6 +20,25 @@ func TestParseSSIM(t *testing.T) {
 	}
 	if got != 0.9971234 {
 		t.Fatalf("ParseSSIM() = %v", got)
+	}
+}
+
+func TestMeasureSSIMEnablesX265InfoLog(t *testing.T) {
+	client := New("ffmpeg", "ffprobe")
+	client.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "-x265-params ssim=1:log-level=info") {
+			t.Fatalf("ffmpeg args do not enable x265 info logging: %s", joined)
+		}
+		return nil, []byte("encoded 100 frames, SSIM Mean Y: 0.9971234 (25.4 dB)"), nil
+	})
+
+	got, err := client.MeasureSSIM(context.Background(), "source.mp4", 0, "yuv420p", "slow", 1, 4, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0.9971234 {
+		t.Fatalf("MeasureSSIM() = %v", got)
 	}
 }
 
