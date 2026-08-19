@@ -8,7 +8,7 @@ import (
 var Candidates = []int{20, 18, 16}
 
 type Measurer interface {
-	MeasureSSIM(ctx context.Context, input string, ordinal int, pixFmt, preset string, start, duration float64, crf int) (float64, error)
+	MeasureSSIM(ctx context.Context, input string, ordinal int, pixFmt, preset, encoder string, start, duration float64, crf int) (float64, error)
 }
 
 type Logger interface {
@@ -16,13 +16,15 @@ type Logger interface {
 }
 
 type Selector struct {
-	Measurer       Measurer
-	Logger         Logger
-	AverageMin     float64
-	WorstMin       float64
-	SampleDuration float64
-	SampleCount    int
-	Preset         string
+	Measurer         Measurer
+	Logger           Logger
+	AverageMin       float64
+	WorstMin         float64
+	SampleDuration   float64
+	SampleCount      int
+	Preset           string
+	PreferredEncoder string
+	FallbackEncoder  string
 }
 
 type Result struct {
@@ -30,6 +32,7 @@ type Result struct {
 	Average float64
 	Worst   float64
 	Found   bool
+	Encoder string
 }
 
 func SampleStarts(duration float64, count int, sampleDuration float64) []float64 {
@@ -53,6 +56,21 @@ func SampleStarts(duration float64, count int, sampleDuration float64) []float64
 }
 
 func (s Selector) Select(ctx context.Context, input string, ordinal int, pixFmt string, duration float64) (Result, error) {
+	encoder := s.PreferredEncoder
+	if encoder == "" {
+		encoder = "libx265"
+	}
+	result, err := s.selectWithEncoder(ctx, input, ordinal, pixFmt, duration, encoder)
+	if err == nil || s.FallbackEncoder == "" || s.FallbackEncoder == encoder || ctx.Err() != nil {
+		return result, err
+	}
+	if s.Logger != nil {
+		s.Logger.Printf("ENCODER-FALLBACK: encoder=%s failed during quality analysis; retrying all samples with encoder=%s | %v", encoder, s.FallbackEncoder, err)
+	}
+	return s.selectWithEncoder(ctx, input, ordinal, pixFmt, duration, s.FallbackEncoder)
+}
+
+func (s Selector) selectWithEncoder(ctx context.Context, input string, ordinal int, pixFmt string, duration float64, encoder string) (Result, error) {
 	starts := SampleStarts(duration, s.SampleCount, s.SampleDuration)
 	if len(starts) == 0 {
 		return Result{}, fmt.Errorf("no valid sample positions")
@@ -66,12 +84,12 @@ func (s Selector) Select(ctx context.Context, input string, ordinal int, pixFmt 
 		sum := 0.0
 		worst := 1.0
 		for i, start := range starts {
-			score, err := s.Measurer.MeasureSSIM(ctx, input, ordinal, pixFmt, s.Preset, start, effectiveDuration, crf)
+			score, err := s.Measurer.MeasureSSIM(ctx, input, ordinal, pixFmt, s.Preset, encoder, start, effectiveDuration, crf)
 			if err != nil {
-				return Result{}, fmt.Errorf("CRF %d sample %d: %w", crf, i+1, err)
+				return Result{}, fmt.Errorf("encoder %s quality %d sample %d: %w", encoder, crf, i+1, err)
 			}
 			if s.Logger != nil {
-				s.Logger.Printf("CRF-TEST: crf=%d sample=%d start=%.3fs duration=%.3fs ssim=%.7f", crf, i+1, start, effectiveDuration, score)
+				s.Logger.Printf("QUALITY-TEST: encoder=%s value=%d sample=%d start=%.3fs duration=%.3fs ssim=%.7f", encoder, crf, i+1, start, effectiveDuration, score)
 			}
 			sum += score
 			if score < worst {
@@ -80,11 +98,11 @@ func (s Selector) Select(ctx context.Context, input string, ordinal int, pixFmt 
 		}
 		avg := sum / float64(len(starts))
 		if avg >= s.AverageMin && worst >= s.WorstMin {
-			return Result{CRF: crf, Average: avg, Worst: worst, Found: true}, nil
+			return Result{CRF: crf, Average: avg, Worst: worst, Found: true, Encoder: encoder}, nil
 		}
 		if s.Logger != nil {
-			s.Logger.Printf("CRF-REJECT: crf=%d avg_ssim=%.6f worst_ssim=%.6f thresholds=%.6f/%.6f", crf, avg, worst, s.AverageMin, s.WorstMin)
+			s.Logger.Printf("QUALITY-REJECT: encoder=%s value=%d avg_ssim=%.6f worst_ssim=%.6f thresholds=%.6f/%.6f", encoder, crf, avg, worst, s.AverageMin, s.WorstMin)
 		}
 	}
-	return Result{Found: false}, nil
+	return Result{Found: false, Encoder: encoder}, nil
 }

@@ -2,6 +2,7 @@ package ffmpeg
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -33,12 +34,151 @@ func TestMeasureSSIMEnablesX265InfoLog(t *testing.T) {
 		return nil, []byte("encoded 100 frames, SSIM Mean Y: 0.9971234 (25.4 dB)"), nil
 	})
 
-	got, err := client.MeasureSSIM(context.Background(), "source.mp4", 0, "yuv420p", "slow", 1, 4, 20)
+	got, err := client.MeasureSSIM(context.Background(), "source.mp4", 0, "yuv420p", "slow", "libx265", 1, 4, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != 0.9971234 {
 		t.Fatalf("MeasureSSIM() = %v", got)
+	}
+}
+
+func TestParseSSIMFromFilterOutput(t *testing.T) {
+	input := []byte(`[Parsed_ssim_2 @ 0x1] SSIM Y:0.996432 (24.5) U:0.998 V:0.998 All:0.997`)
+	got, err := ParseSSIM(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0.996432 {
+		t.Fatalf("ParseSSIM() = %v", got)
+	}
+}
+
+func TestDetectNVIDIARunsRuntimeProbes(t *testing.T) {
+	client := New("ffmpeg", "ffprobe")
+	client.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, "-encoders"):
+			return []byte("V....D libx265\nV....D hevc_nvenc"), nil, nil
+		case strings.Contains(joined, "-hwaccels"):
+			return []byte("Hardware acceleration methods:\ncuda"), nil, nil
+		case strings.Contains(joined, "-c:v hevc_nvenc"):
+			return nil, nil, nil
+		case strings.Contains(joined, "-c:v libx265"):
+			return nil, nil, nil
+		case strings.Contains(joined, "-hwaccel cuda"):
+			return nil, nil, nil
+		default:
+			t.Fatalf("unexpected ffmpeg args: %s", joined)
+			return nil, nil, nil
+		}
+	})
+
+	got := client.DetectNVIDIA(context.Background())
+	if !got.NVENC || !got.NVDEC {
+		t.Fatalf("DetectNVIDIA() = %+v, want both available", got)
+	}
+}
+
+func TestDetectNVIDIARejectsAdvertisedButUnusableNVENC(t *testing.T) {
+	client := New("ffmpeg", "ffprobe")
+	client.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "-encoders") {
+			return []byte("V....D hevc_nvenc"), nil, nil
+		}
+		if strings.Contains(joined, "-c:v hevc_nvenc") {
+			return nil, []byte("Cannot load libcuda.so.1"), errors.New("exit status 1")
+		}
+		if strings.Contains(joined, "-hwaccels") {
+			return []byte("Hardware acceleration methods:"), nil, nil
+		}
+		t.Fatalf("unexpected ffmpeg args: %s", joined)
+		return nil, nil, nil
+	})
+
+	got := client.DetectNVIDIA(context.Background())
+	if got.NVENC || !strings.Contains(got.NVENCReason, "Cannot load libcuda") {
+		t.Fatalf("DetectNVIDIA() = %+v", got)
+	}
+}
+
+func TestDetectNVIDIARejectsAdvertisedButUnusableNVDEC(t *testing.T) {
+	client := New("ffmpeg", "ffprobe")
+	client.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, "-encoders"):
+			return []byte("V....D libx265"), nil, nil
+		case strings.Contains(joined, "-hwaccels"):
+			return []byte("Hardware acceleration methods:\ncuda"), nil, nil
+		case strings.Contains(joined, "-c:v libx265"):
+			return nil, nil, nil
+		case strings.Contains(joined, "-hwaccel cuda"):
+			return nil, []byte("No device available for decoder"), errors.New("exit status 1")
+		default:
+			t.Fatalf("unexpected ffmpeg args: %s", joined)
+			return nil, nil, nil
+		}
+	})
+
+	got := client.DetectNVIDIA(context.Background())
+	if got.NVDEC || !strings.Contains(got.NVDECReason, "No device available") {
+		t.Fatalf("DetectNVIDIA() = %+v", got)
+	}
+}
+
+func TestMeasureSSIMWithNVENCUsesEncodedSample(t *testing.T) {
+	client := New("ffmpeg", "ffprobe")
+	var calls []string
+	client.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		joined := strings.Join(args, " ")
+		calls = append(calls, joined)
+		if strings.Contains(joined, "-filter_complex") {
+			return nil, []byte("SSIM Y:0.998765 U:0.999 V:0.999 All:0.999"), nil
+		}
+		return nil, nil, nil
+	})
+
+	got, err := client.MeasureSSIM(context.Background(), "source.mp4", 1, "yuv420p", "slow", "hevc_nvenc", 2, 4, 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0.998765 {
+		t.Fatalf("MeasureSSIM() = %v", got)
+	}
+	if len(calls) != 2 || !strings.Contains(calls[0], "-c:v hevc_nvenc") ||
+		!strings.Contains(calls[0], "-preset p6 -tune hq -rc vbr -cq 18 -b:v 0") ||
+		!strings.Contains(calls[1], "[0:v:1]setpts=PTS-STARTPTS") {
+		t.Fatalf("unexpected calls: %v", calls)
+	}
+}
+
+func TestEncodeRetriesWithoutNVDEC(t *testing.T) {
+	client := New("ffmpeg", "ffprobe")
+	client.NVIDIA.NVDEC = true
+	var calls []string
+	client.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		joined := strings.Join(args, " ")
+		calls = append(calls, joined)
+		if strings.Contains(joined, "-hwaccel cuda") {
+			return nil, []byte("unsupported decoder"), errors.New("exit status 1")
+		}
+		return nil, nil, nil
+	})
+
+	err := client.Encode(context.Background(), EncodeOptions{
+		Input: "source.mp4", Output: "output.mp4", PixFmt: "yuv420p", Preset: "slow", CRF: 20, Encoder: "hevc_nvenc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || !strings.Contains(calls[0], "-hwaccel cuda") || strings.Contains(calls[1], "-hwaccel cuda") {
+		t.Fatalf("calls = %v, want hardware attempt then software decode", calls)
+	}
+	if !strings.Contains(calls[1], "-c:v:0 hevc_nvenc") || !strings.Contains(calls[1], "-cq:v:0 20") {
+		t.Fatalf("fallback changed encoder options: %s", calls[1])
 	}
 }
 

@@ -18,6 +18,7 @@ type fakeMedia struct {
 	outputProbe media.Info
 	encodeCalls int
 	decodeCalls int
+	encodeOpts  ff.EncodeOptions
 }
 
 func (f *fakeMedia) Probe(_ context.Context, path string) (media.Info, error) {
@@ -29,6 +30,7 @@ func (f *fakeMedia) Probe(_ context.Context, path string) (media.Info, error) {
 
 func (f *fakeMedia) Encode(_ context.Context, o ff.EncodeOptions) error {
 	f.encodeCalls++
+	f.encodeOpts = o
 	return os.WriteFile(o.Output, make([]byte, 500), 0o644)
 }
 
@@ -68,7 +70,7 @@ func TestProcessDryRunDoesNotEncode(t *testing.T) {
 	m := &fakeMedia{probe: baseInfo("h264")}
 	c := config.Default()
 	c.DryRun = true
-	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, CRF: 20, Average: 0.999, Worst: 0.998}}}
+	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, CRF: 20, Average: 0.999, Worst: 0.998, Encoder: "hevc_nvenc"}}}
 	got := p.Process(context.Background(), path)
 	if got.Status != StatusSkipped || m.encodeCalls != 0 {
 		t.Fatalf("result=%+v encodeCalls=%d", got, m.encodeCalls)
@@ -86,7 +88,7 @@ func TestProcessReplacesAfterValidation(t *testing.T) {
 	m := &fakeMedia{probe: in, outputProbe: out}
 	c := config.Default()
 	c.MinSavings = 1
-	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, CRF: 20, Average: 0.999, Worst: 0.998}}}
+	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, CRF: 20, Average: 0.999, Worst: 0.998, Encoder: "hevc_nvenc"}}}
 	got := p.Process(context.Background(), path)
 	if got.Status != StatusConverted || got.SavedBytes != 500 {
 		t.Fatalf("result=%+v", got)
@@ -100,6 +102,9 @@ func TestProcessReplacesAfterValidation(t *testing.T) {
 	}
 	if m.decodeCalls != 1 {
 		t.Fatalf("decodeCalls = %d, want 1", m.decodeCalls)
+	}
+	if m.encodeOpts.Encoder != "hevc_nvenc" {
+		t.Fatalf("encoder = %q, want hevc_nvenc", m.encodeOpts.Encoder)
 	}
 }
 
