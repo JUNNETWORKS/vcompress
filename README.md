@@ -1,7 +1,7 @@
 # vcompress
 
 Cross-platform (Windows/Linux/macOS) recursive video compressor built around FFmpeg/ffprobe.
-It converts selected legacy/delivery codecs to HEVC/x265 only when a short, representative SSIM analysis chooses an acceptable CRF from **20 → 18 → 16**, validates the finished output, and confirms that the file is meaningfully smaller.
+It converts selected legacy/delivery codecs to HEVC only when a short, representative SSIM analysis chooses an acceptable quality value from **20 → 18 → 16**, validates the finished output, and confirms that the file is meaningfully smaller. It uses NVIDIA NVENC and NVDEC automatically when runtime probes confirm that they work, and otherwise keeps the existing libx265/software path.
 
 ## Safety policy
 
@@ -17,13 +17,15 @@ It converts selected legacy/delivery codecs to HEVC/x265 only when a short, repr
 - Uses a same-directory temporary output. Unix replacement (Linux/macOS) is an atomic rename; Windows replacement uses `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`.
 - With `--keep-original`, publishes the validated output beside the source without replacing or deleting the source. Same-container output uses a `.hevc` suffix, such as `movie.hevc.mp4`.
 - Keeps the container for `.mp4`, `.m4v`, `.mov` and `.mkv`; any other input container is remuxed to `.mkv` next to the source, and the source is only removed after the new file has passed every check. If that `.mkv` path already exists, the file is skipped instead of overwritten.
-- Processing is intentionally sequential so one x265 encode can use the machine without multiple simultaneous encodes exhausting CPU/RAM.
+- Processing is intentionally sequential so one encode can use the machine without multiple simultaneous encodes exhausting CPU, GPU, RAM or VRAM.
+- At startup, performs real one-frame NVIDIA encode and decode probes rather than trusting FFmpeg's feature lists alone. A source codec that NVDEC cannot decode is retried with software decoding, and NVENC sample analysis falls back as a whole to libx265 if that format cannot be encoded by NVENC.
 
 ## Requirements
 
 - Go 1.26 to build (`mise` installs and pins it; `GOTOOLCHAIN=local` keeps builds identical to CI).
 - `ffmpeg` and `ffprobe` available in `PATH` at runtime.
 - FFmpeg must include the `libx265` encoder.
+- NVIDIA acceleration is optional. When available, FFmpeg must expose a working `hevc_nvenc` encoder and CUDA hardware acceleration, and the installed NVIDIA driver must be compatible with that FFmpeg build. `libx265` remains required as the safe fallback.
 
 ## Download
 
@@ -108,16 +110,16 @@ With `-keep-original`, `movie.mp4` produces `movie.hevc.mp4` and leaves
 `movie.avi`, produce `movie.mkv` and likewise retain the source. An existing
 destination is never overwritten.
 
-## Automatic CRF selection
+## Automatic quality selection
 
 For each eligible file:
 
 1. Representative sample positions are spread through the video.
-2. CRF 20 is sample-encoded with x265 and x265's `SSIM Mean Y` is captured.
-3. CRF 20 is accepted when both average and worst-sample thresholds pass.
-4. Otherwise CRF 18 is tested, then CRF 16.
+2. Quality value 20 is sample-encoded with the selected encoder. x265 reports its reconstructed-frame SSIM directly; NVENC output is decoded and compared with the matching source interval using FFmpeg's `ssim` filter.
+3. Quality value 20 is accepted when both average and worst-sample thresholds pass.
+4. Otherwise quality value 18 is tested, then 16. These are x265 CRF values or NVENC CQ values; they are measured independently and are not assumed to be equivalent.
 5. If none pass, the source is left unchanged.
-6. A complete encode is performed only after a CRF is selected.
+6. A complete encode is performed only after a quality value is selected.
 7. The complete output must pass structural/full-decode checks and the minimum size saving before publication.
 
 SSIM is an objective proxy, not a mathematical guarantee of perceptual transparency.
@@ -164,7 +166,7 @@ internal/discovery/     recursive cross-platform file discovery
 internal/ffmpeg/        ffmpeg/ffprobe process adapter and JSON parsing
 internal/fsutil/        output naming, size helpers, OS-specific safe replacement
 internal/media/         media model and validation helpers
-internal/quality/       representative sampling and CRF 20/18/16 selection
+internal/quality/       representative sampling and quality 20/18/16 selection
 internal/processor/     per-file orchestration and safety gates
 internal/logging/       console + file logger
 ```

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -17,6 +18,15 @@ type Client struct {
 	FFmpeg  string
 	FFprobe string
 	Runner  Runner
+	NVIDIA  NVIDIACapabilities
+	Logf    func(format string, args ...any)
+}
+
+type NVIDIACapabilities struct {
+	NVENC       bool
+	NVDEC       bool
+	NVENCReason string
+	NVDECReason string
 }
 
 func New(ffmpegPath, ffprobePath string) *Client {
@@ -136,12 +146,81 @@ func (c *Client) HasLibx265(ctx context.Context) error {
 	return nil
 }
 
-var ssimRE = regexp.MustCompile(`SSIM Mean Y:\s*([0-9]+(?:\.[0-9]+)?)`)
+func (c *Client) DetectNVIDIA(ctx context.Context) NVIDIACapabilities {
+	caps := NVIDIACapabilities{
+		NVENCReason: "hevc_nvenc is not present in this FFmpeg build",
+		NVDECReason: "CUDA hardware acceleration is not present in this FFmpeg build",
+	}
+
+	stdout, stderr, err := c.Runner.Run(ctx, c.FFmpeg, "-hide_banner", "-encoders")
+	if err != nil {
+		caps.NVENCReason = commandFailure("ffmpeg -encoders", err, stderr)
+	} else if strings.Contains(string(stdout)+string(stderr), "hevc_nvenc") {
+		_, probeStderr, probeErr := c.Runner.Run(ctx, c.FFmpeg,
+			"-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=64x64:r=1",
+			"-frames:v", "1", "-an", "-c:v", "hevc_nvenc", "-preset", "p1", "-f", "null", "-",
+		)
+		if probeErr == nil {
+			caps.NVENC = true
+			caps.NVENCReason = "runtime probe succeeded"
+		} else {
+			caps.NVENCReason = commandFailure("hevc_nvenc runtime probe", probeErr, probeStderr)
+		}
+	}
+
+	stdout, stderr, err = c.Runner.Run(ctx, c.FFmpeg, "-hide_banner", "-hwaccels")
+	if err != nil {
+		caps.NVDECReason = commandFailure("ffmpeg -hwaccels", err, stderr)
+	} else if strings.Contains(strings.ToLower(string(stdout)+string(stderr)), "cuda") {
+		caps.NVDEC, caps.NVDECReason = c.probeNVDEC(ctx)
+	}
+	return caps
+}
+
+func (c *Client) probeNVDEC(ctx context.Context) (bool, string) {
+	path, cleanup, err := temporaryMediaPath("vcompress-nvdec-probe-*.mkv")
+	if err != nil {
+		return false, err.Error()
+	}
+	defer cleanup()
+
+	_, stderr, err := c.Runner.Run(ctx, c.FFmpeg,
+		"-hide_banner", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=64x64:r=1",
+		"-frames:v", "1", "-an", "-c:v", "libx265", "-preset", "ultrafast", path,
+	)
+	if err != nil {
+		return false, commandFailure("create NVDEC probe stream", err, stderr)
+	}
+	_, stderr, err = c.Runner.Run(ctx, c.FFmpeg,
+		"-hide_banner", "-loglevel", "error", "-hwaccel", "cuda", "-i", path,
+		"-map", "0:v:0", "-frames:v", "1", "-f", "null", "-",
+	)
+	if err != nil {
+		return false, commandFailure("NVDEC runtime probe", err, stderr)
+	}
+	return true, "runtime probe succeeded"
+}
+
+func commandFailure(operation string, err error, stderr []byte) string {
+	detail := tail(string(stderr), 4)
+	if detail == "" {
+		return fmt.Sprintf("%s failed: %v", operation, err)
+	}
+	return fmt.Sprintf("%s failed: %v: %s", operation, err, detail)
+}
+
+var (
+	x265SSIMRE   = regexp.MustCompile(`SSIM Mean Y:\s*([0-9]+(?:\.[0-9]+)?)`)
+	filterSSIMRE = regexp.MustCompile(`SSIM Y:\s*([0-9]+(?:\.[0-9]+)?)`)
+)
 
 func ParseSSIM(stderr []byte) (float64, error) {
-	matches := ssimRE.FindAllSubmatch(stderr, -1)
+	matches := x265SSIMRE.FindAllSubmatch(stderr, -1)
 	if len(matches) == 0 {
-		return 0, errors.New("x265 SSIM Mean Y not found")
+		matches = filterSSIMRE.FindAllSubmatch(stderr, -1)
+	}
+	if len(matches) == 0 {
+		return 0, errors.New("SSIM Mean Y was not found")
 	}
 	v, err := strconv.ParseFloat(string(matches[len(matches)-1][1]), 64)
 	if err != nil {
@@ -150,17 +229,62 @@ func ParseSSIM(stderr []byte) (float64, error) {
 	return v, nil
 }
 
-func (c *Client) MeasureSSIM(ctx context.Context, input string, ordinal int, pixFmt, preset string, start, duration float64, crf int) (float64, error) {
-	_, stderr, err := c.Runner.Run(ctx, c.FFmpeg,
-		"-hide_banner", "-y", "-loglevel", "error",
-		"-ss", fmt.Sprintf("%.3f", start), "-i", input,
-		"-t", fmt.Sprintf("%.3f", duration),
-		"-map", fmt.Sprintf("0:v:%d", ordinal), "-an", "-sn", "-dn",
-		"-c:v", "libx265", "-preset", preset, "-crf", strconv.Itoa(crf), "-pix_fmt", pixFmt,
-		"-x265-params", "ssim=1:log-level=info", "-f", "null", "-",
-	)
+func (c *Client) MeasureSSIM(ctx context.Context, input string, ordinal int, pixFmt, preset, encoder string, start, duration float64, crf int) (float64, error) {
+	if normalizeEncoder(encoder) == "hevc_nvenc" {
+		return c.measureNVENCSSIM(ctx, input, ordinal, pixFmt, preset, start, duration, crf)
+	}
+	_, stderr, err := c.runWithNVDECFallback(ctx, "x265 sample decode", func(useNVDEC bool) []string {
+		args := []string{"-hide_banner", "-y", "-loglevel", "error", "-ss", fmt.Sprintf("%.3f", start)}
+		args = appendHWAccel(args, useNVDEC)
+		return append(args,
+			"-i", input, "-t", fmt.Sprintf("%.3f", duration),
+			"-map", fmt.Sprintf("0:v:%d", ordinal), "-an", "-sn", "-dn",
+			"-c:v", "libx265", "-preset", preset, "-crf", strconv.Itoa(crf), "-pix_fmt", pixFmt,
+			"-x265-params", "ssim=1:log-level=info", "-f", "null", "-",
+		)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("sample encode failed: %w: %s", err, tail(string(stderr), 12))
+	}
+	return ParseSSIM(stderr)
+}
+
+func (c *Client) measureNVENCSSIM(ctx context.Context, input string, ordinal int, pixFmt, preset string, start, duration float64, quality int) (float64, error) {
+	path, cleanup, err := temporaryMediaPath("vcompress-nvenc-sample-*.mkv")
+	if err != nil {
+		return 0, err
+	}
+	defer cleanup()
+
+	_, stderr, err := c.runWithNVDECFallback(ctx, "NVENC sample decode", func(useNVDEC bool) []string {
+		args := []string{"-hide_banner", "-y", "-loglevel", "error", "-ss", fmt.Sprintf("%.3f", start)}
+		args = appendHWAccel(args, useNVDEC)
+		args = append(args,
+			"-i", input, "-t", fmt.Sprintf("%.3f", duration),
+			"-map", fmt.Sprintf("0:v:%d", ordinal), "-an", "-sn", "-dn",
+			"-c:v", "hevc_nvenc", "-preset", nvencPreset(preset), "-tune", "hq",
+			"-rc", "vbr", "-cq", strconv.Itoa(quality), "-b:v", "0", "-pix_fmt", pixFmt,
+			path,
+		)
+		return args
+	})
+	if err != nil {
+		return 0, fmt.Errorf("NVENC sample encode failed: %w: %s", err, tail(string(stderr), 12))
+	}
+
+	_, stderr, err = c.runWithNVDECFallback(ctx, "SSIM comparison decode", func(useNVDEC bool) []string {
+		args := []string{"-hide_banner", "-nostats", "-loglevel", "info", "-ss", fmt.Sprintf("%.3f", start), "-t", fmt.Sprintf("%.3f", duration)}
+		args = appendHWAccel(args, useNVDEC)
+		args = append(args, "-i", input)
+		args = appendHWAccel(args, useNVDEC)
+		return append(args,
+			"-i", path,
+			"-filter_complex", fmt.Sprintf("[0:v:%d]setpts=PTS-STARTPTS[ref];[1:v:0]setpts=PTS-STARTPTS[dist];[ref][dist]ssim=shortest=1", ordinal),
+			"-an", "-sn", "-dn", "-f", "null", "-",
+		)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("NVENC sample SSIM comparison failed: %w: %s", err, tail(string(stderr), 12))
 	}
 	return ParseSSIM(stderr)
 }
@@ -176,38 +300,46 @@ type EncodeOptions struct {
 	ColorSpace string
 	ColorTrc   string
 	ColorPrim  string
+	Encoder    string
 }
 
 func (c *Client) Encode(ctx context.Context, o EncodeOptions) error {
 	ord := strconv.Itoa(o.Ordinal)
-	args := []string{
-		"-hide_banner", "-y", "-i", o.Input,
-		"-map", "0", "-map_metadata", "0", "-map_chapters", "0",
-		"-c", "copy",
-		"-c:v:" + ord, "libx265",
-		"-preset:v:" + ord, o.Preset,
-		"-crf:v:" + ord, strconv.Itoa(o.CRF),
-		"-pix_fmt:v:" + ord, o.PixFmt,
-		"-max_muxing_queue_size", "4096",
-	}
-	if o.ColorRange != "" && o.ColorRange != "unknown" {
-		args = append(args, "-color_range:v:"+ord, o.ColorRange)
-	}
-	if o.ColorSpace != "" && o.ColorSpace != "unknown" {
-		args = append(args, "-colorspace:v:"+ord, o.ColorSpace)
-	}
-	if o.ColorTrc != "" && o.ColorTrc != "unknown" {
-		args = append(args, "-color_trc:v:"+ord, o.ColorTrc)
-	}
-	if o.ColorPrim != "" && o.ColorPrim != "unknown" {
-		args = append(args, "-color_primaries:v:"+ord, o.ColorPrim)
-	}
-	switch strings.ToLower(filepath.Ext(o.Output)) {
-	case ".mp4", ".m4v", ".mov":
-		args = append(args, "-tag:v:"+ord, "hvc1", "-movflags", "+faststart")
-	}
-	args = append(args, o.Output)
-	_, stderr, err := c.Runner.Run(ctx, c.FFmpeg, args...)
+	encoder := normalizeEncoder(o.Encoder)
+	_, stderr, err := c.runWithNVDECFallback(ctx, "final encode decode", func(useNVDEC bool) []string {
+		args := []string{"-hide_banner", "-y"}
+		args = appendHWAccel(args, useNVDEC)
+		args = append(args, "-i", o.Input,
+			"-map", "0", "-map_metadata", "0", "-map_chapters", "0",
+			"-c", "copy",
+			"-c:v:"+ord, encoder)
+		if encoder == "hevc_nvenc" {
+			args = append(args,
+				"-preset:v:"+ord, nvencPreset(o.Preset), "-tune:v:"+ord, "hq",
+				"-rc:v:"+ord, "vbr", "-cq:v:"+ord, strconv.Itoa(o.CRF), "-b:v:"+ord, "0",
+			)
+		} else {
+			args = append(args, "-preset:v:"+ord, o.Preset, "-crf:v:"+ord, strconv.Itoa(o.CRF))
+		}
+		args = append(args, "-pix_fmt:v:"+ord, o.PixFmt, "-max_muxing_queue_size", "4096")
+		if o.ColorRange != "" && o.ColorRange != "unknown" {
+			args = append(args, "-color_range:v:"+ord, o.ColorRange)
+		}
+		if o.ColorSpace != "" && o.ColorSpace != "unknown" {
+			args = append(args, "-colorspace:v:"+ord, o.ColorSpace)
+		}
+		if o.ColorTrc != "" && o.ColorTrc != "unknown" {
+			args = append(args, "-color_trc:v:"+ord, o.ColorTrc)
+		}
+		if o.ColorPrim != "" && o.ColorPrim != "unknown" {
+			args = append(args, "-color_primaries:v:"+ord, o.ColorPrim)
+		}
+		switch strings.ToLower(filepath.Ext(o.Output)) {
+		case ".mp4", ".m4v", ".mov":
+			args = append(args, "-tag:v:"+ord, "hvc1", "-movflags", "+faststart")
+		}
+		return append(args, o.Output)
+	})
 	if err != nil {
 		return fmt.Errorf("ffmpeg encode/mux failed: %w: %s", err, tail(string(stderr), 20))
 	}
@@ -215,14 +347,76 @@ func (c *Client) Encode(ctx context.Context, o EncodeOptions) error {
 }
 
 func (c *Client) FullDecode(ctx context.Context, path string, ordinal int) error {
-	_, stderr, err := c.Runner.Run(ctx, c.FFmpeg,
-		"-hide_banner", "-loglevel", "error", "-xerror", "-i", path,
-		"-map", fmt.Sprintf("0:v:%d", ordinal), "-f", "null", "-",
-	)
+	_, stderr, err := c.runWithNVDECFallback(ctx, "full decode check", func(useNVDEC bool) []string {
+		args := []string{"-hide_banner", "-loglevel", "error", "-xerror"}
+		args = appendHWAccel(args, useNVDEC)
+		return append(args, "-i", path, "-map", fmt.Sprintf("0:v:%d", ordinal), "-f", "null", "-")
+	})
 	if err != nil {
 		return fmt.Errorf("full decode check failed: %w: %s", err, tail(string(stderr), 12))
 	}
 	return nil
+}
+
+func normalizeEncoder(encoder string) string {
+	if encoder == "hevc_nvenc" {
+		return encoder
+	}
+	return "libx265"
+}
+
+func nvencPreset(preset string) string {
+	switch strings.ToLower(preset) {
+	case "ultrafast", "superfast":
+		return "p1"
+	case "veryfast":
+		return "p2"
+	case "faster":
+		return "p3"
+	case "fast":
+		return "p4"
+	case "medium":
+		return "p5"
+	case "slow":
+		return "p6"
+	default:
+		return "p7"
+	}
+}
+
+func appendHWAccel(args []string, enabled bool) []string {
+	if enabled {
+		return append(args, "-hwaccel", "cuda")
+	}
+	return args
+}
+
+func (c *Client) runWithNVDECFallback(ctx context.Context, operation string, args func(useNVDEC bool) []string) ([]byte, []byte, error) {
+	if !c.NVIDIA.NVDEC {
+		return c.Runner.Run(ctx, c.FFmpeg, args(false)...)
+	}
+	stdout, stderr, err := c.Runner.Run(ctx, c.FFmpeg, args(true)...)
+	if err == nil || ctx.Err() != nil {
+		return stdout, stderr, err
+	}
+	if c.Logf != nil {
+		c.Logf("NVDEC-FALLBACK: %s failed; retrying with software decode | %s", operation, commandFailure(operation, err, stderr))
+	}
+	return c.Runner.Run(ctx, c.FFmpeg, args(false)...)
+}
+
+func temporaryMediaPath(pattern string) (string, func(), error) {
+	f, err := os.CreateTemp("", pattern)
+	if err != nil {
+		return "", nil, fmt.Errorf("create temporary media path: %w", err)
+	}
+	path := f.Name()
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return "", nil, fmt.Errorf("close temporary media path: %w", err)
+	}
+	cleanup := func() { _ = os.Remove(path) }
+	return path, cleanup, nil
 }
 
 func tail(s string, lines int) string {

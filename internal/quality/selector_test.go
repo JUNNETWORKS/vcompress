@@ -12,7 +12,7 @@ type fakeMeasurer struct {
 	errCRF int
 }
 
-func (f *fakeMeasurer) MeasureSSIM(_ context.Context, _ string, _ int, _ string, _ string, _, _ float64, crf int) (float64, error) {
+func (f *fakeMeasurer) MeasureSSIM(_ context.Context, _ string, _ int, _ string, _, _ string, _, _ float64, crf int) (float64, error) {
 	if crf == f.errCRF {
 		return 0, errors.New("boom")
 	}
@@ -22,6 +22,19 @@ func (f *fakeMeasurer) MeasureSSIM(_ context.Context, _ string, _ int, _ string,
 	i := f.calls[crf]
 	f.calls[crf]++
 	return f.scores[crf][i], nil
+}
+
+type encoderMeasurer struct {
+	failEncoder string
+	calls       []string
+}
+
+func (m *encoderMeasurer) MeasureSSIM(_ context.Context, _ string, _ int, _, _, encoder string, _, _ float64, _ int) (float64, error) {
+	m.calls = append(m.calls, encoder)
+	if encoder == m.failEncoder {
+		return 0, errors.New("unsupported")
+	}
+	return 0.999, nil
 }
 
 func TestSampleStarts(t *testing.T) {
@@ -83,6 +96,31 @@ func TestSampleStartsShortVideoUsesZeroStart(t *testing.T) {
 	for i, v := range got {
 		if v != 0 {
 			t.Fatalf("starts[%d] = %v, want 0", i, v)
+		}
+	}
+}
+
+func TestSelectRestartsWithFallbackEncoder(t *testing.T) {
+	m := &encoderMeasurer{failEncoder: "hevc_nvenc"}
+	s := Selector{
+		Measurer: m, AverageMin: 0.995, WorstMin: 0.992,
+		SampleDuration: 1, SampleCount: 2, Preset: "slow",
+		PreferredEncoder: "hevc_nvenc", FallbackEncoder: "libx265",
+	}
+	got, err := s.Select(context.Background(), "x.mp4", 0, "yuv420p", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Found || got.Encoder != "libx265" {
+		t.Fatalf("Select() = %+v, want libx265 fallback", got)
+	}
+	want := []string{"hevc_nvenc", "libx265", "libx265"}
+	if len(m.calls) != len(want) {
+		t.Fatalf("calls = %v, want %v", m.calls, want)
+	}
+	for i := range want {
+		if m.calls[i] != want[i] {
+			t.Fatalf("calls = %v, want %v", m.calls, want)
 		}
 	}
 }

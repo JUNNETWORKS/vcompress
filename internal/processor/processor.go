@@ -101,17 +101,17 @@ func (p *Processor) Process(ctx context.Context, input string) Result {
 
 	selected, err := p.Selector.Select(ctx, input, info.Video.Ordinal, info.Video.PixFmt, info.Duration)
 	if err != nil {
-		p.log("FAILED: CRF analysis could not be completed safely: %s | %v", input, err)
+		p.log("FAILED: quality analysis could not be completed safely: %s | %v", input, err)
 		return Result{Status: StatusFailed}
 	}
 	if !selected.Found {
-		p.log("KEEP ORIGINAL: even CRF 16 did not meet SSIM thresholds: %s", input)
+		p.log("KEEP ORIGINAL: even quality value 16 did not meet SSIM thresholds: %s", input)
 		return Result{Status: StatusSkipped}
 	}
-	p.log("CRF-SELECT: crf=%d avg_ssim=%.6f worst_ssim=%.6f", selected.CRF, selected.Average, selected.Worst)
+	p.log("QUALITY-SELECT: encoder=%s value=%d avg_ssim=%.6f worst_ssim=%.6f", selected.Encoder, selected.CRF, selected.Average, selected.Worst)
 
 	if p.Config.DryRun {
-		p.log("DRY-RUN: selected CRF %d; would encode to %s", selected.CRF, paths.Final)
+		p.log("DRY-RUN: selected encoder=%s quality=%d; would encode to %s", selected.Encoder, selected.CRF, paths.Final)
 		return Result{Status: StatusSkipped}
 	}
 
@@ -126,6 +126,7 @@ func (p *Processor) Process(ctx context.Context, input string) Result {
 		ColorSpace: info.Video.ColorSpace,
 		ColorTrc:   info.Video.ColorTransfer,
 		ColorPrim:  info.Video.ColorPrimaries,
+		Encoder:    selected.Encoder,
 	}); err != nil {
 		p.log("FAILED: ffmpeg encode/mux failed: %s | %v", input, err)
 		return Result{Status: StatusFailed}
@@ -175,13 +176,13 @@ func (p *Processor) Process(ctx context.Context, input string) Result {
 
 	saved := originalSize - newSize
 	if p.Config.KeepOriginal {
-		p.log("OK: crf=%d ssim_avg=%.6f ssim_worst=%.6f | %s -> %s | potential_saving=%s (%.1f%%) | source retained=%s | %s",
-			selected.CRF, selected.Average, selected.Worst,
+		p.log("OK: encoder=%s quality=%d ssim_avg=%.6f ssim_worst=%.6f | %s -> %s | potential_saving=%s (%.1f%%) | source retained=%s | %s",
+			selected.Encoder, selected.CRF, selected.Average, selected.Worst,
 			fsutil.HumanSize(originalSize), fsutil.HumanSize(newSize), fsutil.HumanSize(saved), pct, input, paths.Final)
 		return Result{Status: StatusConverted}
 	}
-	p.log("OK: crf=%d ssim_avg=%.6f ssim_worst=%.6f | %s -> %s | saved=%s (%.1f%%) | %s",
-		selected.CRF, selected.Average, selected.Worst,
+	p.log("OK: encoder=%s quality=%d ssim_avg=%.6f ssim_worst=%.6f | %s -> %s | saved=%s (%.1f%%) | %s",
+		selected.Encoder, selected.CRF, selected.Average, selected.Worst,
 		fsutil.HumanSize(originalSize), fsutil.HumanSize(newSize), fsutil.HumanSize(saved), pct, paths.Final)
 	return Result{Status: StatusConverted, SavedBytes: saved}
 }
