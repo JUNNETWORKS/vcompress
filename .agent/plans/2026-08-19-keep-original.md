@@ -122,7 +122,7 @@ removal behavior.
 - [x] (2026-08-19 14:56Z) Ran formatting, `mise run check`, host and Windows builds, CLI help inspection, and `mise run test-integration` successfully.
 - [x] (2026-08-19 14:56Z) Recorded evidence and retrospective.
 - [x] (2026-08-19 18:04Z) Diagnosed the Windows CI failure as a non-portable hard-coded permission expectation and changed the test to compare the output with the source filesystem's observed permissions.
-- [ ] Re-run local checks, push the focused CI fix, and confirm the GitHub Actions rerun passes.
+- [x] (2026-08-19 18:07Z) Re-ran local checks, pushed the focused CI fix, and confirmed both GitHub Actions reruns passed on Windows and Ubuntu.
 
 ## Surprises and discoveries
 
@@ -201,7 +201,17 @@ The first PR run failed only `unit (windows-latest)` with:
 ```
 
 Ubuntu unit tests, vet and integration tests, and security checks all passed.
-Post-fix rerun evidence will be appended after the PR update.
+After commit `74e0229`, the push and pull-request workflow runs both passed:
+
+```text
+unit (ubuntu-latest)     pass
+unit (windows-latest)    pass
+vet-and-integration      pass
+GitGuardian Security Checks  pass
+```
+
+The two Windows jobs completed in 37 and 41 seconds. The two vet and
+integration jobs completed in 1 minute 20 seconds and 1 minute 42 seconds.
 
 ## Outcomes and retrospective
 
