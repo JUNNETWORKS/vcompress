@@ -149,6 +149,10 @@ working-tree changes.
 - [x] (2026-08-19 18:58Z) Ran formatting, unit tests, vet, Windows compilation,
       the real FFmpeg integration test and a no-NVIDIA CLI smoke test.
 - [x] (2026-08-19 18:58Z) Recorded evidence and completed the retrospective.
+- [x] (2026-08-19 19:38Z) Replaced the 64x64 NVENC runtime probe with a
+      1920x1080 frame after a Windows NVIDIA host proved that the small probe
+      failed while the standard-resolution probe succeeded, and retained more
+      stderr lines for future initialization diagnostics.
 
 ## Surprises and discoveries
 
@@ -163,6 +167,12 @@ proved the unchanged software selection but could not execute NVIDIA hardware.
 The NVIDIA command construction, runtime-probe decisions and fallback paths
 are covered with mocked process tests; a real NVIDIA-host acceptance run
 remains operational follow-up.
+
+A Windows NVIDIA host reported `Invalid argument` from the 64x64
+`hevc_nvenc` runtime probe while the NVDEC probe succeeded. Running the same
+one-frame NVENC command at 1920x1080 succeeded. This proved the initial probe
+was a false negative caused by its synthetic frame dimensions rather than an
+unavailable encoder.
 
 ## Decision log
 
@@ -180,6 +190,12 @@ quality threshold misleading.
 the operation with software decoding on failure. This uses NVDEC where the
 input codec supports it while preserving compatibility with software filters,
 pixel formats and legacy codecs that a particular GPU cannot decode.
+
+2026-08-20 — Codex: Use a 1920x1080 synthetic frame for NVENC runtime
+detection. A 64x64 frame produced `Invalid argument` on a real Windows NVIDIA
+host even though 1920x1080 HEVC NVENC succeeded; one standard-resolution frame
+adds negligible startup work and avoids that hardware-specific minimum-size
+false negative.
 
 ## Artifacts and notes
 
@@ -222,3 +238,7 @@ All locally available automated and real-FFmpeg checks passed. Because this
 development host has no NVIDIA GPU, the only open validation item is a real
 NVIDIA-host dry run and disposable conversion; no implementation change is
 known to be pending.
+
+The target Windows host subsequently proved that a 1920x1080 one-frame NVENC
+probe succeeds. The startup detector now uses that resolution; a new unit-test
+assertion prevents the probe from regressing to an unsupported small frame.
