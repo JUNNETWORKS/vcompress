@@ -15,6 +15,7 @@ type Config struct {
 	SampleCount     int
 	MinSavings      float64
 	FullDecodeCheck bool
+	KeepOriginal    bool
 	DryRun          bool
 	FFmpegPath      string
 	FFprobePath     string
@@ -29,6 +30,7 @@ func Default() Config {
 		SampleCount:     3,
 		MinSavings:      5.0,
 		FullDecodeCheck: true,
+		KeepOriginal:    false,
 		FFmpegPath:      "ffmpeg",
 		FFprobePath:     "ffprobe",
 	}

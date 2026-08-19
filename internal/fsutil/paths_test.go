@@ -10,16 +10,20 @@ func TestPlanOutput(t *testing.T) {
 	tests := []struct {
 		name      string
 		inputName string
+		keep      bool
 		finalName string
 	}{
-		{"mp4 preserved", "a.mp4", "a.mp4"},
-		{"mkv preserved", "a.mkv", "a.mkv"},
-		{"avi becomes mkv", "a.avi", "a.mkv"},
+		{"mp4 replaced by default", "a.mp4", false, "a.mp4"},
+		{"mkv replaced by default", "a.mkv", false, "a.mkv"},
+		{"avi becomes mkv", "a.avi", false, "a.mkv"},
+		{"mp4 retained beside hevc output", "a.mp4", true, "a.hevc.mp4"},
+		{"uppercase mov retained beside hevc output", "a.MOV", true, "a.hevc.MOV"},
+		{"avi retained beside mkv output", "a.avi", true, "a.mkv"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			input := filepath.Join(dir, tt.inputName)
-			p, err := PlanOutput(input)
+			p, err := PlanOutput(input, tt.keep)
 			if err != nil {
 				t.Fatal(err)
 			}

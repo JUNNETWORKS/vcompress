@@ -11,6 +11,9 @@ func TestDefaultIsValidAfterRoot(t *testing.T) {
 	if c.AnalysisPreset != c.Preset {
 		t.Fatalf("analysis preset = %q, want %q", c.AnalysisPreset, c.Preset)
 	}
+	if c.KeepOriginal {
+		t.Fatal("KeepOriginal = true, want default false")
+	}
 }
 
 func TestValidateRejectsInvalidThresholds(t *testing.T) {

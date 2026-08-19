@@ -35,6 +35,7 @@ func run() int {
 	flag.IntVar(&cfg.SampleCount, "sample-count", cfg.SampleCount, "number of representative samples (1-5)")
 	flag.Float64Var(&cfg.MinSavings, "min-savings", cfg.MinSavings, "minimum size reduction percent required for replacement")
 	flag.BoolVar(&noFullDecode, "no-full-decode-check", false, "skip full decode verification of generated output")
+	flag.BoolVar(&cfg.KeepOriginal, "keep-original", cfg.KeepOriginal, "publish compressed output beside the source without deleting it")
 	flag.BoolVar(&cfg.DryRun, "dry-run", false, "analyze and select CRF without full encode or replacement")
 	flag.StringVar(&cfg.FFmpegPath, "ffmpeg", cfg.FFmpegPath, "path or executable name for ffmpeg")
 	flag.StringVar(&cfg.FFprobePath, "ffprobe", cfg.FFprobePath, "path or executable name for ffprobe")
@@ -93,8 +94,8 @@ func run() int {
 
 	total, converted, skipped, failed := 0, 0, 0, 0
 	var saved int64
-	log.Printf("START root=%s auto_crf=20/18/16 preset=%s analysis_preset=%s ssim_avg_min=%.6f ssim_worst_min=%.6f sample_duration=%.3fs sample_count=%d min_savings=%.1f%% full_decode_check=%t dry_run=%t",
-		cfg.Root, cfg.Preset, cfg.AnalysisPreset, cfg.SSIMAverageMin, cfg.SSIMWorstMin, cfg.SampleDuration, cfg.SampleCount, cfg.MinSavings, cfg.FullDecodeCheck, cfg.DryRun)
+	log.Printf("START root=%s auto_crf=20/18/16 preset=%s analysis_preset=%s ssim_avg_min=%.6f ssim_worst_min=%.6f sample_duration=%.3fs sample_count=%d min_savings=%.1f%% full_decode_check=%t keep_original=%t dry_run=%t",
+		cfg.Root, cfg.Preset, cfg.AnalysisPreset, cfg.SSIMAverageMin, cfg.SSIMWorstMin, cfg.SampleDuration, cfg.SampleCount, cfg.MinSavings, cfg.FullDecodeCheck, cfg.KeepOriginal, cfg.DryRun)
 
 	err = discovery.Walk(cfg.Root, func(path string) error {
 		if ctx.Err() != nil {
