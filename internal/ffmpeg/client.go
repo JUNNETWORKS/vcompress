@@ -157,7 +157,7 @@ func (c *Client) MeasureSSIM(ctx context.Context, input string, ordinal int, pix
 		"-t", fmt.Sprintf("%.3f", duration),
 		"-map", fmt.Sprintf("0:v:%d", ordinal), "-an", "-sn", "-dn",
 		"-c:v", "libx265", "-preset", preset, "-crf", strconv.Itoa(crf), "-pix_fmt", pixFmt,
-		"-x265-params", "ssim=1", "-f", "null", "-",
+		"-x265-params", "ssim=1:log-level=info", "-f", "null", "-",
 	)
 	if err != nil {
 		return 0, fmt.Errorf("sample encode failed: %w: %s", err, tail(string(stderr), 12))
