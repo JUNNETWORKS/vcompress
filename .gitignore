@@ -22,11 +22,6 @@ mise.local.toml
 .mise.local.toml
 .mise/
 
-# Local agent/tooling scratch state, except the committed ExecPlan documents
-.agent/*
-!.agent/PLANS.md
-!.agent/plans/
-
 # Editor / IDE
 .idea/
 .vscode/
