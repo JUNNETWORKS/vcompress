@@ -31,9 +31,11 @@ func TestIntegrationMPEG4ToHEVC(t *testing.T) {
 	for _, tt := range []struct {
 		name         string
 		keepOriginal bool
+		directCRF    bool
 	}{
 		{name: "replace source"},
 		{name: "keep original", keepOriginal: true},
+		{name: "direct CRF without SSIM", directCRF: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -58,7 +60,10 @@ func TestIntegrationMPEG4ToHEVC(t *testing.T) {
 			cfg.KeepOriginal = tt.keepOriginal
 
 			log := logging.NewWriter(os.Stdout)
-			sel := quality.Selector{Measurer: client, Logger: log, AverageMin: cfg.SSIMAverageMin, WorstMin: cfg.SSIMWorstMin, SampleDuration: cfg.SampleDuration, SampleCount: cfg.SampleCount, Preset: cfg.AnalysisPreset}
+			var sel Selector = quality.Selector{Measurer: client, Logger: log, AverageMin: cfg.SSIMAverageMin, WorstMin: cfg.SSIMWorstMin, SampleDuration: cfg.SampleDuration, SampleCount: cfg.SampleCount, Preset: cfg.AnalysisPreset}
+			if tt.directCRF {
+				sel = quality.FixedSelector{Value: 24, Encoder: "libx265"}
+			}
 			p := Processor{Config: cfg, Media: client, Selector: sel, Logger: log}
 			result := p.Process(ctx, input)
 			if result.Status != StatusConverted {

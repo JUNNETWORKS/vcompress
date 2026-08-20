@@ -108,10 +108,15 @@ func (p *Processor) Process(ctx context.Context, input string) Result {
 		p.log("KEEP ORIGINAL: even quality value 16 did not meet SSIM thresholds: %s", input)
 		return Result{Status: StatusSkipped}
 	}
-	p.log("QUALITY-SELECT: encoder=%s value=%d avg_ssim=%.6f worst_ssim=%.6f", selected.Encoder, selected.CRF, selected.Average, selected.Worst)
+	qualitySummary := describeQuality(selected)
+	if selected.SSIMCompared {
+		p.log("QUALITY-SELECT: %s", qualitySummary)
+	} else {
+		p.log("QUALITY-DIRECT: %s", qualitySummary)
+	}
 
 	if p.Config.DryRun {
-		p.log("DRY-RUN: selected encoder=%s quality=%d; would encode to %s", selected.Encoder, selected.CRF, paths.Final)
+		p.log("DRY-RUN: selected %s; would encode to %s", qualitySummary, paths.Final)
 		return Result{Status: StatusSkipped}
 	}
 
@@ -121,7 +126,7 @@ func (p *Processor) Process(ctx context.Context, input string) Result {
 		Ordinal:    info.Video.Ordinal,
 		PixFmt:     info.Video.PixFmt,
 		Preset:     p.Config.Preset,
-		CRF:        selected.CRF,
+		Quality:    selected.Value,
 		ColorRange: info.Video.ColorRange,
 		ColorSpace: info.Video.ColorSpace,
 		ColorTrc:   info.Video.ColorTransfer,
@@ -176,15 +181,27 @@ func (p *Processor) Process(ctx context.Context, input string) Result {
 
 	saved := originalSize - newSize
 	if p.Config.KeepOriginal {
-		p.log("OK: encoder=%s quality=%d ssim_avg=%.6f ssim_worst=%.6f | %s -> %s | potential_saving=%s (%.1f%%) | source retained=%s | %s",
-			selected.Encoder, selected.CRF, selected.Average, selected.Worst,
+		p.log("OK: %s | %s -> %s | potential_saving=%s (%.1f%%) | source retained=%s | %s",
+			qualitySummary,
 			fsutil.HumanSize(originalSize), fsutil.HumanSize(newSize), fsutil.HumanSize(saved), pct, input, paths.Final)
 		return Result{Status: StatusConverted}
 	}
-	p.log("OK: encoder=%s quality=%d ssim_avg=%.6f ssim_worst=%.6f | %s -> %s | saved=%s (%.1f%%) | %s",
-		selected.Encoder, selected.CRF, selected.Average, selected.Worst,
+	p.log("OK: %s | %s -> %s | saved=%s (%.1f%%) | %s",
+		qualitySummary,
 		fsutil.HumanSize(originalSize), fsutil.HumanSize(newSize), fsutil.HumanSize(saved), pct, paths.Final)
 	return Result{Status: StatusConverted, SavedBytes: saved}
+}
+
+func describeQuality(selected quality.Result) string {
+	if selected.SSIMCompared {
+		return fmt.Sprintf("encoder=%s value=%d avg_ssim=%.6f worst_ssim=%.6f",
+			selected.Encoder, selected.Value, selected.Average, selected.Worst)
+	}
+	name := "crf"
+	if selected.Encoder == "hevc_nvenc" {
+		name = "cq"
+	}
+	return fmt.Sprintf("encoder=%s %s=%d ssim=skipped", selected.Encoder, name, selected.Value)
 }
 
 func (p *Processor) validate(ctx context.Context, out string, in media.Info) error {

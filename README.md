@@ -1,7 +1,7 @@
 # vcompress
 
 Cross-platform (Windows/Linux/macOS) recursive video compressor built around FFmpeg/ffprobe.
-It converts selected legacy/delivery codecs to HEVC only when a short, representative SSIM analysis chooses an acceptable quality value from **20 → 18 → 16**, validates the finished output, and confirms that the file is meaningfully smaller. It uses NVIDIA NVENC and NVDEC automatically when runtime probes confirm that they work, keeps NVDEC frames in GPU memory when passing them directly to NVENC, and otherwise keeps the existing libx265/software path.
+By default, it converts selected legacy/delivery codecs to HEVC only when a short, representative SSIM analysis chooses an acceptable quality value from **20 → 18 → 16**, validates the finished output, and confirms that the file is meaningfully smaller. For large collections where the analysis time is undesirable, an explicit CRF or NVENC CQ can bypass only the SSIM selection step. It uses NVIDIA NVENC and NVDEC automatically when runtime probes confirm that they work, keeps NVDEC frames in GPU memory when passing them directly to NVENC, and otherwise keeps the existing libx265/software path.
 
 ## Safety policy
 
@@ -14,6 +14,8 @@ It converts selected legacy/delivery codecs to HEVC only when a short, represent
 - Validates stream-type counts, chapters, duration, codec, pixel format, resolution, FPS and color signalling.
 - Performs a full decode check by default.
 - Keeps the source unless the result is at least 5% smaller by default.
+- `-crf` or `-cq` can explicitly bypass the pre-encode SSIM comparison; all
+  structural, full-decode, savings and replacement checks still apply.
 - Uses a same-directory temporary output. Unix replacement (Linux/macOS) is an atomic rename; Windows replacement uses `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`.
 - With `--keep-original`, publishes the validated output beside the source without replacing or deleting the source. Same-container output uses a `.hevc` suffix, such as `movie.hevc.mp4`.
 - Keeps the container for `.mp4`, `.m4v`, `.mov` and `.mkv`; any other input container is remuxed to `.mkv` next to the source, and the source is only removed after the new file has passed every check. If that `.mkv` path already exists, the file is skipped instead of overwritten.
@@ -91,6 +93,8 @@ Windows PowerShell:
 Important options:
 
 ```text
+-crf 20
+-cq 20
 -preset slow
 -analysis-preset slow
 -ssim-average 0.995
@@ -106,6 +110,13 @@ Important options:
 ```
 
 The log is written to `ffmpeg-compress.log` in the selected root directory.
+`-crf N` forces libx265 CRF `N`; `-cq N` requires working NVIDIA NVENC and
+uses CQ `N`. Both accept integers from 0 through 51, cannot be combined, and
+skip representative sample encoding and SSIM comparison. Lower values usually
+retain more detail and produce larger files. CRF and CQ values are not
+quality-equivalent, so `-cq` never silently falls back to libx265. With neither
+option, automatic SSIM selection remains enabled.
+
 With `-keep-original`, `movie.mp4` produces `movie.hevc.mp4` and leaves
 `movie.mp4` unchanged. Inputs that require a container change, such as
 `movie.avi`, produce `movie.mkv` and likewise retain the source. An existing
@@ -126,6 +137,25 @@ For each eligible file:
 7. The complete output must pass structural/full-decode checks and the minimum size saving before publication.
 
 SSIM is an objective proxy, not a mathematical guarantee of perceptual transparency.
+
+## Direct quality selection
+
+To skip SSIM analysis and use libx265 CRF 20 for every eligible file:
+
+```bash
+./vcompress -crf 20 /path/to/videos
+```
+
+To use NVIDIA NVENC CQ 20 instead:
+
+```bash
+./vcompress -cq 20 /path/to/videos
+```
+
+Direct mode is an explicit quality-policy override. It saves the sample-analysis
+work, but it does not skip the finished-file probe, full decode check, minimum
+savings requirement, or safe replacement process. Use `-dry-run` first to
+confirm eligibility and the selected encoder without writing output.
 
 ## Tests
 

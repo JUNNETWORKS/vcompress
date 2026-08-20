@@ -9,6 +9,8 @@ type Config struct {
 	Root            string
 	Preset          string
 	AnalysisPreset  string
+	DirectCRF       *int
+	DirectCQ        *int
 	SSIMAverageMin  float64
 	SSIMWorstMin    float64
 	SampleDuration  float64
@@ -57,6 +59,15 @@ func (c Config) Validate() error {
 	}
 	if c.AnalysisPreset == "" {
 		return fmt.Errorf("analysis preset must not be empty")
+	}
+	if c.DirectCRF != nil && c.DirectCQ != nil {
+		return fmt.Errorf("crf and cq cannot be used together")
+	}
+	if c.DirectCRF != nil && (*c.DirectCRF < 0 || *c.DirectCRF > 51) {
+		return fmt.Errorf("crf must be between 0 and 51")
+	}
+	if c.DirectCQ != nil && (*c.DirectCQ < 0 || *c.DirectCQ > 51) {
+		return fmt.Errorf("cq must be between 0 and 51")
 	}
 	if c.SSIMAverageMin <= 0 || c.SSIMAverageMin > 1 {
 		return fmt.Errorf("ssim-average must satisfy 0 < value <= 1")

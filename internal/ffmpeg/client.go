@@ -298,7 +298,7 @@ type EncodeOptions struct {
 	Ordinal    int
 	PixFmt     string
 	Preset     string
-	CRF        int
+	Quality    int
 	ColorRange string
 	ColorSpace string
 	ColorTrc   string
@@ -319,10 +319,10 @@ func (c *Client) Encode(ctx context.Context, o EncodeOptions) error {
 		if encoder == "hevc_nvenc" {
 			args = append(args,
 				"-preset:v:"+ord, nvencPreset(o.Preset), "-tune:v:"+ord, "hq",
-				"-rc:v:"+ord, "vbr", "-cq:v:"+ord, strconv.Itoa(o.CRF), "-b:v:"+ord, "0",
+				"-rc:v:"+ord, "vbr", "-cq:v:"+ord, strconv.Itoa(o.Quality), "-b:v:"+ord, "0",
 			)
 		} else {
-			args = append(args, "-preset:v:"+ord, o.Preset, "-crf:v:"+ord, strconv.Itoa(o.CRF))
+			args = append(args, "-preset:v:"+ord, o.Preset, "-crf:v:"+ord, strconv.Itoa(o.Quality))
 		}
 		if !keepFramesOnGPU {
 			args = append(args, "-pix_fmt:v:"+ord, o.PixFmt)
