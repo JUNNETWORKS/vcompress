@@ -30,8 +30,11 @@ func run() int {
 
 	flag.StringVar(&cfg.Preset, "preset", cfg.Preset, "final encoder preset (x265 name; mapped to NVENC p1-p7)")
 	flag.StringVar(&cfg.AnalysisPreset, "analysis-preset", "", "sample encoder preset (default: same as -preset)")
-	flag.Func("crf", "use libx265 CRF directly (0-51) and skip SSIM analysis", setOptionalInt(&cfg.DirectCRF))
-	flag.Func("cq", "use NVENC CQ directly (0-51) and skip SSIM analysis", setOptionalInt(&cfg.DirectCQ))
+	flag.Func("crf", "use libx265 CRF directly (0-51) and skip quality analysis", setOptionalInt(&cfg.DirectCRF))
+	flag.Func("cq", "use NVENC CQ directly (0-51) and skip quality analysis", setOptionalInt(&cfg.DirectCQ))
+	flag.StringVar(&cfg.QualityMetric, "quality-metric", cfg.QualityMetric, "automatic quality metric: vmaf, ssim, or both")
+	flag.Float64Var(&cfg.VMAFAverageMin, "vmaf-average", cfg.VMAFAverageMin, "minimum average VMAF score")
+	flag.Float64Var(&cfg.VMAFWorstMin, "vmaf-worst", cfg.VMAFWorstMin, "minimum worst-sample VMAF score")
 	flag.Float64Var(&cfg.SSIMAverageMin, "ssim-average", cfg.SSIMAverageMin, "minimum average SSIM Mean Y")
 	flag.Float64Var(&cfg.SSIMWorstMin, "ssim-worst", cfg.SSIMWorstMin, "minimum worst-sample SSIM Mean Y")
 	flag.Float64Var(&cfg.SampleDuration, "sample-duration", cfg.SampleDuration, "seconds per representative sample")
@@ -88,6 +91,12 @@ func run() int {
 		log.Printf("ERROR: %v", err)
 		return 1
 	}
+	if requiresLibvmaf(cfg) {
+		if err := client.HasLibvmaf(ctx); err != nil {
+			log.Printf("ERROR: %v", err)
+			return 1
+		}
+	}
 	client.NVIDIA = client.DetectNVIDIA(ctx)
 	log.Printf("NVIDIA-DETECT: nvenc=%t (%s) nvdec=%t (%s)",
 		client.NVIDIA.NVENC, client.NVIDIA.NVENCReason, client.NVIDIA.NVDEC, client.NVIDIA.NVDECReason)
@@ -107,8 +116,8 @@ func run() int {
 
 	total, converted, skipped, failed := 0, 0, 0, 0
 	var saved int64
-	log.Printf("START root=%s quality_mode=%s encoder=%s decoder=%s preset=%s analysis_preset=%s ssim_avg_min=%.6f ssim_worst_min=%.6f sample_duration=%.3fs sample_count=%d min_savings=%.1f%% full_decode_check=%t keep_original=%t dry_run=%t",
-		cfg.Root, qualityMode, encoder, decoder, cfg.Preset, cfg.AnalysisPreset, cfg.SSIMAverageMin, cfg.SSIMWorstMin, cfg.SampleDuration, cfg.SampleCount, cfg.MinSavings, cfg.FullDecodeCheck, cfg.KeepOriginal, cfg.DryRun)
+	log.Printf("START root=%s quality_mode=%s encoder=%s decoder=%s preset=%s analysis_preset=%s vmaf_avg_min=%.4f vmaf_worst_min=%.4f ssim_avg_min=%.6f ssim_worst_min=%.6f sample_duration=%.3fs sample_count=%d min_savings=%.1f%% full_decode_check=%t keep_original=%t dry_run=%t",
+		cfg.Root, qualityMode, encoder, decoder, cfg.Preset, cfg.AnalysisPreset, cfg.VMAFAverageMin, cfg.VMAFWorstMin, cfg.SSIMAverageMin, cfg.SSIMWorstMin, cfg.SampleDuration, cfg.SampleCount, cfg.MinSavings, cfg.FullDecodeCheck, cfg.KeepOriginal, cfg.DryRun)
 
 	err = discovery.Walk(cfg.Root, func(path string) error {
 		if ctx.Err() != nil {
@@ -142,6 +151,11 @@ func run() int {
 	return 0
 }
 
+func requiresLibvmaf(cfg config.Config) bool {
+	return cfg.DirectCRF == nil && cfg.DirectCQ == nil &&
+		(cfg.QualityMetric == "vmaf" || cfg.QualityMetric == "both")
+}
+
 func setOptionalInt(target **int) func(string) error {
 	return func(value string) error {
 		parsed, err := strconv.Atoi(value)
@@ -156,14 +170,14 @@ func setOptionalInt(target **int) func(string) error {
 func buildQualitySelector(cfg config.Config, client *ffmpeg.Client, log quality.Logger) (processor.Selector, string, string, error) {
 	if cfg.DirectCRF != nil {
 		return quality.FixedSelector{Value: *cfg.DirectCRF, Encoder: "libx265"},
-			"libx265", fmt.Sprintf("direct-crf:%d:ssim-skipped", *cfg.DirectCRF), nil
+			"libx265", fmt.Sprintf("direct-crf:%d:analysis-skipped", *cfg.DirectCRF), nil
 	}
 	if cfg.DirectCQ != nil {
 		if !client.NVIDIA.NVENC {
 			return nil, "", "", fmt.Errorf("-cq requires working NVIDIA NVENC: %s", client.NVIDIA.NVENCReason)
 		}
 		return quality.FixedSelector{Value: *cfg.DirectCQ, Encoder: "hevc_nvenc"},
-			"hevc_nvenc", fmt.Sprintf("direct-cq:%d:ssim-skipped", *cfg.DirectCQ), nil
+			"hevc_nvenc", fmt.Sprintf("direct-cq:%d:analysis-skipped", *cfg.DirectCQ), nil
 	}
 
 	encoder := "libx265"
@@ -174,8 +188,9 @@ func buildQualitySelector(cfg config.Config, client *ffmpeg.Client, log quality.
 	}
 	return quality.Selector{
 		Measurer: client, Logger: log, PreferredEncoder: encoder, FallbackEncoder: fallbackEncoder,
-		AverageMin: cfg.SSIMAverageMin, WorstMin: cfg.SSIMWorstMin,
+		SSIMAverageMin: cfg.SSIMAverageMin, SSIMWorstMin: cfg.SSIMWorstMin,
+		VMAFAverageMin: cfg.VMAFAverageMin, VMAFWorstMin: cfg.VMAFWorstMin,
 		SampleDuration: cfg.SampleDuration, SampleCount: cfg.SampleCount,
-		Preset: cfg.AnalysisPreset,
-	}, encoder, "ssim-auto:20/18/16", nil
+		Preset: cfg.AnalysisPreset, Metric: quality.Metric(cfg.QualityMetric),
+	}, encoder, cfg.QualityMetric + "-auto:20/18/16", nil
 }

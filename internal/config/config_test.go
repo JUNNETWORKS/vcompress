@@ -17,6 +17,9 @@ func TestDefaultIsValidAfterRoot(t *testing.T) {
 	if c.DirectCRF != nil || c.DirectCQ != nil {
 		t.Fatalf("direct quality defaults = %v/%v, want nil/nil", c.DirectCRF, c.DirectCQ)
 	}
+	if c.QualityMetric != "vmaf" || c.VMAFAverageMin != 95 || c.VMAFWorstMin != 90 {
+		t.Fatalf("VMAF defaults = %q/%v/%v, want vmaf/95/90", c.QualityMetric, c.VMAFAverageMin, c.VMAFWorstMin)
+	}
 }
 
 func TestValidateRejectsInvalidThresholds(t *testing.T) {
@@ -26,6 +29,9 @@ func TestValidateRejectsInvalidThresholds(t *testing.T) {
 	}{
 		{"average zero", func(c *Config) { c.SSIMAverageMin = 0 }},
 		{"worst above average", func(c *Config) { c.SSIMWorstMin = 0.999; c.SSIMAverageMin = 0.995 }},
+		{"unknown metric", func(c *Config) { c.QualityMetric = "psnr" }},
+		{"VMAF average above 100", func(c *Config) { c.VMAFAverageMin = 101 }},
+		{"VMAF worst above average", func(c *Config) { c.VMAFWorstMin = 96; c.VMAFAverageMin = 95 }},
 		{"sample count zero", func(c *Config) { c.SampleCount = 0 }},
 		{"sample count six", func(c *Config) { c.SampleCount = 6 }},
 		{"negative savings", func(c *Config) { c.MinSavings = -1 }},
@@ -40,6 +46,18 @@ func TestValidateRejectsInvalidThresholds(t *testing.T) {
 				t.Fatal("Validate() = nil, want error")
 			}
 		})
+	}
+}
+
+func TestNormalizeCanonicalizesQualityMetric(t *testing.T) {
+	c := Default()
+	c.Root = "."
+	c.QualityMetric = " BOTH "
+	if err := c.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if c.QualityMetric != "both" {
+		t.Fatalf("QualityMetric = %q, want both", c.QualityMetric)
 	}
 }
 

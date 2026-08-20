@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"vcompress/internal/quality"
 )
 
 type runnerFunc func(ctx context.Context, name string, args ...string) ([]byte, []byte, error)
@@ -14,7 +16,7 @@ func (f runnerFunc) Run(ctx context.Context, name string, args ...string) ([]byt
 }
 
 func TestParseSSIM(t *testing.T) {
-	input := []byte(`x265 [info]: encoded 100 frames in 1.00s, 100.00 fps, 1000.00 kb/s, Avg QP:22.00, Global PSNR: 45.0, SSIM Mean Y: 0.9971234 (25.4 dB)`)
+	input := []byte(`[Parsed_ssim_2 @ 0x1] SSIM Y:0.9971234 (25.4) U:0.998 V:0.998 All:0.997`)
 	got, err := ParseSSIM(input)
 	if err != nil {
 		t.Fatal(err)
@@ -24,26 +26,45 @@ func TestParseSSIM(t *testing.T) {
 	}
 }
 
-func TestMeasureSSIMEnablesX265InfoLog(t *testing.T) {
-	client := New("ffmpeg", "ffprobe")
-	client.NVIDIA.NVDEC = true
-	client.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
-		joined := strings.Join(args, " ")
-		if !strings.Contains(joined, "-x265-params ssim=1:log-level=info") {
-			t.Fatalf("ffmpeg args do not enable x265 info logging: %s", joined)
-		}
-		if !strings.Contains(joined, "-hwaccel cuda") || strings.Contains(joined, "-hwaccel_output_format cuda") {
-			t.Fatalf("x265 should download NVDEC frames to host memory: %s", joined)
-		}
-		return nil, []byte("encoded 100 frames, SSIM Mean Y: 0.9971234 (25.4 dB)"), nil
-	})
-
-	got, err := client.MeasureSSIM(context.Background(), "source.mp4", 0, "yuv420p", "slow", "libx265", 1, 4, 20)
+func TestParseVMAF(t *testing.T) {
+	input := []byte(`[Parsed_libvmaf_2 @ 0x1] VMAF score: 97.432100`)
+	got, err := ParseVMAF(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != 0.9971234 {
-		t.Fatalf("MeasureSSIM() = %v", got)
+	if got != 97.4321 {
+		t.Fatalf("ParseVMAF() = %v", got)
+	}
+}
+
+func TestMeasureQualityWithX265EncodesThenComparesVMAF(t *testing.T) {
+	client := New("ffmpeg", "ffprobe")
+	client.NVIDIA.NVDEC = true
+	var calls []string
+	client.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		joined := strings.Join(args, " ")
+		calls = append(calls, joined)
+		if strings.Contains(joined, "libvmaf=model=version=vmaf_v0.6.1:shortest=1") {
+			return nil, []byte("VMAF score: 97.432100"), nil
+		}
+		return nil, nil, nil
+	})
+
+	got, err := client.MeasureQuality(context.Background(), "source.mp4", 0, "yuv420p", "slow", "libx265", quality.MetricVMAF, 1, 4, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.VMAF != 97.4321 {
+		t.Fatalf("MeasureQuality() = %+v", got)
+	}
+	if len(calls) != 2 || !strings.Contains(calls[0], "-c:v libx265 -preset slow -crf 20") ||
+		!strings.Contains(calls[1], "[dist][ref]libvmaf=model=version=vmaf_v0.6.1:shortest=1") {
+		t.Fatalf("unexpected calls: %v", calls)
+	}
+	for _, call := range calls {
+		if !strings.Contains(call, "-hwaccel cuda") || strings.Contains(call, "-hwaccel_output_format cuda") {
+			t.Fatalf("x265/VMAF should decode CUDA frames to host memory: %s", call)
+		}
 	}
 }
 
@@ -55,6 +76,26 @@ func TestParseSSIMFromFilterOutput(t *testing.T) {
 	}
 	if got != 0.996432 {
 		t.Fatalf("ParseSSIM() = %v", got)
+	}
+}
+
+func TestHasLibvmaf(t *testing.T) {
+	client := New("ffmpeg", "ffprobe")
+	client.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		if strings.Join(args, " ") != "-hide_banner -filters" {
+			t.Fatalf("args = %v", args)
+		}
+		return []byte(" ... libvmaf VV->V Calculate VMAF"), nil, nil
+	})
+	if err := client.HasLibvmaf(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	client.Runner = runnerFunc(func(context.Context, string, ...string) ([]byte, []byte, error) {
+		return []byte(" TS. ssim VV->V Calculate SSIM"), nil, nil
+	})
+	if err := client.HasLibvmaf(context.Background()); err == nil {
+		t.Fatal("HasLibvmaf() = nil without filter")
 	}
 }
 
@@ -139,29 +180,34 @@ func TestDetectNVIDIARejectsAdvertisedButUnusableNVDEC(t *testing.T) {
 	}
 }
 
-func TestMeasureSSIMWithNVENCUsesEncodedSample(t *testing.T) {
+func TestMeasureQualityWithNVENCUsesOneSampleForBothMetrics(t *testing.T) {
 	client := New("ffmpeg", "ffprobe")
 	client.NVIDIA.NVDEC = true
 	var calls []string
 	client.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
 		joined := strings.Join(args, " ")
 		calls = append(calls, joined)
-		if strings.Contains(joined, "-filter_complex") {
+		if strings.Contains(joined, "libvmaf=model=version=vmaf_v0.6.1:shortest=1") {
+			return nil, []byte("VMAF score: 98.765000"), nil
+		}
+		if strings.Contains(joined, "ssim=shortest=1") {
 			return nil, []byte("SSIM Y:0.998765 U:0.999 V:0.999 All:0.999"), nil
 		}
 		return nil, nil, nil
 	})
 
-	got, err := client.MeasureSSIM(context.Background(), "source.mp4", 1, "yuv420p", "slow", "hevc_nvenc", 2, 4, 18)
+	got, err := client.MeasureQuality(context.Background(), "source.mp4", 1, "yuv420p", "slow", "hevc_nvenc", quality.MetricBoth, 2, 4, 18)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != 0.998765 {
-		t.Fatalf("MeasureSSIM() = %v", got)
+	if got.VMAF != 98.765 || got.SSIM != 0.998765 {
+		t.Fatalf("MeasureQuality() = %+v", got)
 	}
-	if len(calls) != 2 || !strings.Contains(calls[0], "-c:v hevc_nvenc") ||
+	if len(calls) != 3 || !strings.Contains(calls[0], "-c:v hevc_nvenc") ||
 		!strings.Contains(calls[0], "-preset p6 -tune hq -rc vbr -cq 18 -b:v 0") ||
-		!strings.Contains(calls[1], "[0:v:1]setpts=PTS-STARTPTS") {
+		!strings.Contains(calls[1], "[0:v:1]setpts=PTS-STARTPTS") ||
+		!strings.Contains(calls[1], "[dist][ref]libvmaf=model=version=vmaf_v0.6.1:shortest=1") ||
+		!strings.Contains(calls[2], "[dist][ref]ssim=shortest=1") {
 		t.Fatalf("unexpected calls: %v", calls)
 	}
 	if !strings.Contains(calls[0], "-hwaccel cuda -hwaccel_output_format cuda") ||
@@ -171,8 +217,10 @@ func TestMeasureSSIMWithNVENCUsesEncodedSample(t *testing.T) {
 	if !strings.Contains(calls[0], "-fps_mode passthrough") {
 		t.Fatalf("NVENC sample does not preserve frame timing: %s", calls[0])
 	}
-	if !strings.Contains(calls[1], "-hwaccel cuda") || strings.Contains(calls[1], "-hwaccel_output_format cuda") {
-		t.Fatalf("SSIM comparison should download frames to host memory: %s", calls[1])
+	for _, call := range calls[1:] {
+		if !strings.Contains(call, "-hwaccel cuda") || strings.Contains(call, "-hwaccel_output_format cuda") {
+			t.Fatalf("metric comparison should download frames to host memory: %s", call)
+		}
 	}
 }
 

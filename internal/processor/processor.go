@@ -105,11 +105,11 @@ func (p *Processor) Process(ctx context.Context, input string) Result {
 		return Result{Status: StatusFailed}
 	}
 	if !selected.Found {
-		p.log("KEEP ORIGINAL: even quality value 16 did not meet SSIM thresholds: %s", input)
+		p.log("KEEP ORIGINAL: even quality value 16 did not meet %s thresholds: %s", selected.Metric, input)
 		return Result{Status: StatusSkipped}
 	}
 	qualitySummary := describeQuality(selected)
-	if selected.SSIMCompared {
+	if selected.Compared {
 		p.log("QUALITY-SELECT: %s", qualitySummary)
 	} else {
 		p.log("QUALITY-DIRECT: %s", qualitySummary)
@@ -193,15 +193,24 @@ func (p *Processor) Process(ctx context.Context, input string) Result {
 }
 
 func describeQuality(selected quality.Result) string {
-	if selected.SSIMCompared {
-		return fmt.Sprintf("encoder=%s value=%d avg_ssim=%.6f worst_ssim=%.6f",
-			selected.Encoder, selected.Value, selected.Average, selected.Worst)
+	if selected.Compared {
+		switch selected.Metric {
+		case quality.MetricVMAF:
+			return fmt.Sprintf("encoder=%s value=%d avg_vmaf=%.4f worst_vmaf=%.4f",
+				selected.Encoder, selected.Value, selected.VMAFAverage, selected.VMAFWorst)
+		case quality.MetricSSIM:
+			return fmt.Sprintf("encoder=%s value=%d avg_ssim=%.6f worst_ssim=%.6f",
+				selected.Encoder, selected.Value, selected.SSIMAverage, selected.SSIMWorst)
+		default:
+			return fmt.Sprintf("encoder=%s value=%d avg_vmaf=%.4f worst_vmaf=%.4f avg_ssim=%.6f worst_ssim=%.6f",
+				selected.Encoder, selected.Value, selected.VMAFAverage, selected.VMAFWorst, selected.SSIMAverage, selected.SSIMWorst)
+		}
 	}
 	name := "crf"
 	if selected.Encoder == "hevc_nvenc" {
 		name = "cq"
 	}
-	return fmt.Sprintf("encoder=%s %s=%d ssim=skipped", selected.Encoder, name, selected.Value)
+	return fmt.Sprintf("encoder=%s %s=%d analysis=skipped", selected.Encoder, name, selected.Value)
 }
 
 func (p *Processor) validate(ctx context.Context, out string, in media.Info) error {
