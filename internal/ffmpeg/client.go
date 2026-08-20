@@ -192,7 +192,7 @@ func (c *Client) probeNVDEC(ctx context.Context) (bool, string) {
 		return false, commandFailure("create NVDEC probe stream", err, stderr)
 	}
 	_, stderr, err = c.Runner.Run(ctx, c.FFmpeg,
-		"-hide_banner", "-loglevel", "error", "-hwaccel", "cuda", "-i", path,
+		"-hide_banner", "-loglevel", "error", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-i", path,
 		"-map", "0:v:0", "-frames:v", "1", "-f", "null", "-",
 	)
 	if err != nil {
@@ -233,9 +233,9 @@ func (c *Client) MeasureSSIM(ctx context.Context, input string, ordinal int, pix
 	if normalizeEncoder(encoder) == "hevc_nvenc" {
 		return c.measureNVENCSSIM(ctx, input, ordinal, pixFmt, preset, start, duration, crf)
 	}
-	_, stderr, err := c.runWithNVDECFallback(ctx, "x265 sample decode", func(useNVDEC bool) []string {
+	_, stderr, err := c.runWithNVDECFallback(ctx, "x265 sample decode", false, func(useNVDEC, keepFramesOnGPU bool) []string {
 		args := []string{"-hide_banner", "-y", "-loglevel", "error", "-ss", fmt.Sprintf("%.3f", start)}
-		args = appendHWAccel(args, useNVDEC)
+		args = appendHWAccel(args, useNVDEC, keepFramesOnGPU)
 		return append(args,
 			"-i", input, "-t", fmt.Sprintf("%.3f", duration),
 			"-map", fmt.Sprintf("0:v:%d", ordinal), "-an", "-sn", "-dn",
@@ -256,27 +256,30 @@ func (c *Client) measureNVENCSSIM(ctx context.Context, input string, ordinal int
 	}
 	defer cleanup()
 
-	_, stderr, err := c.runWithNVDECFallback(ctx, "NVENC sample decode", func(useNVDEC bool) []string {
+	_, stderr, err := c.runWithNVDECFallback(ctx, "NVENC sample decode", true, func(useNVDEC, keepFramesOnGPU bool) []string {
 		args := []string{"-hide_banner", "-y", "-loglevel", "error", "-ss", fmt.Sprintf("%.3f", start)}
-		args = appendHWAccel(args, useNVDEC)
+		args = appendHWAccel(args, useNVDEC, keepFramesOnGPU)
 		args = append(args,
 			"-i", input, "-t", fmt.Sprintf("%.3f", duration),
 			"-map", fmt.Sprintf("0:v:%d", ordinal), "-an", "-sn", "-dn",
 			"-c:v", "hevc_nvenc", "-preset", nvencPreset(preset), "-tune", "hq",
-			"-rc", "vbr", "-cq", strconv.Itoa(quality), "-b:v", "0", "-pix_fmt", pixFmt,
-			path,
+			"-rc", "vbr", "-cq", strconv.Itoa(quality), "-b:v", "0",
 		)
+		if !keepFramesOnGPU {
+			args = append(args, "-pix_fmt", pixFmt)
+		}
+		args = append(args, "-fps_mode", "passthrough", path)
 		return args
 	})
 	if err != nil {
 		return 0, fmt.Errorf("NVENC sample encode failed: %w: %s", err, tail(string(stderr), 12))
 	}
 
-	_, stderr, err = c.runWithNVDECFallback(ctx, "SSIM comparison decode", func(useNVDEC bool) []string {
+	_, stderr, err = c.runWithNVDECFallback(ctx, "SSIM comparison decode", false, func(useNVDEC, keepFramesOnGPU bool) []string {
 		args := []string{"-hide_banner", "-nostats", "-loglevel", "info", "-ss", fmt.Sprintf("%.3f", start), "-t", fmt.Sprintf("%.3f", duration)}
-		args = appendHWAccel(args, useNVDEC)
+		args = appendHWAccel(args, useNVDEC, keepFramesOnGPU)
 		args = append(args, "-i", input)
-		args = appendHWAccel(args, useNVDEC)
+		args = appendHWAccel(args, useNVDEC, keepFramesOnGPU)
 		return append(args,
 			"-i", path,
 			"-filter_complex", fmt.Sprintf("[0:v:%d]setpts=PTS-STARTPTS[ref];[1:v:0]setpts=PTS-STARTPTS[dist];[ref][dist]ssim=shortest=1", ordinal),
@@ -306,9 +309,9 @@ type EncodeOptions struct {
 func (c *Client) Encode(ctx context.Context, o EncodeOptions) error {
 	ord := strconv.Itoa(o.Ordinal)
 	encoder := normalizeEncoder(o.Encoder)
-	_, stderr, err := c.runWithNVDECFallback(ctx, "final encode decode", func(useNVDEC bool) []string {
+	_, stderr, err := c.runWithNVDECFallback(ctx, "final encode decode", encoder == "hevc_nvenc", func(useNVDEC, keepFramesOnGPU bool) []string {
 		args := []string{"-hide_banner", "-y"}
-		args = appendHWAccel(args, useNVDEC)
+		args = appendHWAccel(args, useNVDEC, keepFramesOnGPU)
 		args = append(args, "-i", o.Input,
 			"-map", "0", "-map_metadata", "0", "-map_chapters", "0",
 			"-c", "copy",
@@ -321,7 +324,10 @@ func (c *Client) Encode(ctx context.Context, o EncodeOptions) error {
 		} else {
 			args = append(args, "-preset:v:"+ord, o.Preset, "-crf:v:"+ord, strconv.Itoa(o.CRF))
 		}
-		args = append(args, "-pix_fmt:v:"+ord, o.PixFmt, "-max_muxing_queue_size", "4096")
+		if !keepFramesOnGPU {
+			args = append(args, "-pix_fmt:v:"+ord, o.PixFmt)
+		}
+		args = append(args, "-fps_mode:v:"+ord, "passthrough", "-max_muxing_queue_size", "4096")
 		if o.ColorRange != "" && o.ColorRange != "unknown" {
 			args = append(args, "-color_range:v:"+ord, o.ColorRange)
 		}
@@ -347,9 +353,9 @@ func (c *Client) Encode(ctx context.Context, o EncodeOptions) error {
 }
 
 func (c *Client) FullDecode(ctx context.Context, path string, ordinal int) error {
-	_, stderr, err := c.runWithNVDECFallback(ctx, "full decode check", func(useNVDEC bool) []string {
+	_, stderr, err := c.runWithNVDECFallback(ctx, "full decode check", true, func(useNVDEC, keepFramesOnGPU bool) []string {
 		args := []string{"-hide_banner", "-loglevel", "error", "-xerror"}
-		args = appendHWAccel(args, useNVDEC)
+		args = appendHWAccel(args, useNVDEC, keepFramesOnGPU)
 		return append(args, "-i", path, "-map", fmt.Sprintf("0:v:%d", ordinal), "-f", "null", "-")
 	})
 	if err != nil {
@@ -384,25 +390,28 @@ func nvencPreset(preset string) string {
 	}
 }
 
-func appendHWAccel(args []string, enabled bool) []string {
+func appendHWAccel(args []string, enabled, keepFramesOnGPU bool) []string {
 	if enabled {
-		return append(args, "-hwaccel", "cuda")
+		args = append(args, "-hwaccel", "cuda")
+		if keepFramesOnGPU {
+			args = append(args, "-hwaccel_output_format", "cuda")
+		}
 	}
 	return args
 }
 
-func (c *Client) runWithNVDECFallback(ctx context.Context, operation string, args func(useNVDEC bool) []string) ([]byte, []byte, error) {
+func (c *Client) runWithNVDECFallback(ctx context.Context, operation string, keepFramesOnGPU bool, args func(useNVDEC, keepFramesOnGPU bool) []string) ([]byte, []byte, error) {
 	if !c.NVIDIA.NVDEC {
-		return c.Runner.Run(ctx, c.FFmpeg, args(false)...)
+		return c.Runner.Run(ctx, c.FFmpeg, args(false, false)...)
 	}
-	stdout, stderr, err := c.Runner.Run(ctx, c.FFmpeg, args(true)...)
+	stdout, stderr, err := c.Runner.Run(ctx, c.FFmpeg, args(true, keepFramesOnGPU)...)
 	if err == nil || ctx.Err() != nil {
 		return stdout, stderr, err
 	}
 	if c.Logf != nil {
 		c.Logf("NVDEC-FALLBACK: %s failed; retrying with software decode | %s", operation, commandFailure(operation, err, stderr))
 	}
-	return c.Runner.Run(ctx, c.FFmpeg, args(false)...)
+	return c.Runner.Run(ctx, c.FFmpeg, args(false, false)...)
 }
 
 func temporaryMediaPath(pattern string) (string, func(), error) {

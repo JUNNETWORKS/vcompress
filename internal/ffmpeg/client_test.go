@@ -26,10 +26,14 @@ func TestParseSSIM(t *testing.T) {
 
 func TestMeasureSSIMEnablesX265InfoLog(t *testing.T) {
 	client := New("ffmpeg", "ffprobe")
+	client.NVIDIA.NVDEC = true
 	client.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
 		joined := strings.Join(args, " ")
 		if !strings.Contains(joined, "-x265-params ssim=1:log-level=info") {
 			t.Fatalf("ffmpeg args do not enable x265 info logging: %s", joined)
+		}
+		if !strings.Contains(joined, "-hwaccel cuda") || strings.Contains(joined, "-hwaccel_output_format cuda") {
+			t.Fatalf("x265 should download NVDEC frames to host memory: %s", joined)
 		}
 		return nil, []byte("encoded 100 frames, SSIM Mean Y: 0.9971234 (25.4 dB)"), nil
 	})
@@ -71,6 +75,9 @@ func TestDetectNVIDIARunsRuntimeProbes(t *testing.T) {
 		case strings.Contains(joined, "-c:v libx265"):
 			return nil, nil, nil
 		case strings.Contains(joined, "-hwaccel cuda"):
+			if !strings.Contains(joined, "-hwaccel_output_format cuda") {
+				t.Fatalf("NVDEC runtime probe does not retain CUDA frames: %s", joined)
+			}
 			return nil, nil, nil
 		default:
 			t.Fatalf("unexpected ffmpeg args: %s", joined)
@@ -134,6 +141,7 @@ func TestDetectNVIDIARejectsAdvertisedButUnusableNVDEC(t *testing.T) {
 
 func TestMeasureSSIMWithNVENCUsesEncodedSample(t *testing.T) {
 	client := New("ffmpeg", "ffprobe")
+	client.NVIDIA.NVDEC = true
 	var calls []string
 	client.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
 		joined := strings.Join(args, " ")
@@ -155,6 +163,16 @@ func TestMeasureSSIMWithNVENCUsesEncodedSample(t *testing.T) {
 		!strings.Contains(calls[0], "-preset p6 -tune hq -rc vbr -cq 18 -b:v 0") ||
 		!strings.Contains(calls[1], "[0:v:1]setpts=PTS-STARTPTS") {
 		t.Fatalf("unexpected calls: %v", calls)
+	}
+	if !strings.Contains(calls[0], "-hwaccel cuda -hwaccel_output_format cuda") ||
+		strings.Contains(calls[0], "-pix_fmt yuv420p") {
+		t.Fatalf("NVENC sample is not zero-copy: %s", calls[0])
+	}
+	if !strings.Contains(calls[0], "-fps_mode passthrough") {
+		t.Fatalf("NVENC sample does not preserve frame timing: %s", calls[0])
+	}
+	if !strings.Contains(calls[1], "-hwaccel cuda") || strings.Contains(calls[1], "-hwaccel_output_format cuda") {
+		t.Fatalf("SSIM comparison should download frames to host memory: %s", calls[1])
 	}
 }
 
@@ -180,8 +198,41 @@ func TestEncodeRetriesWithoutNVDEC(t *testing.T) {
 	if len(calls) != 2 || !strings.Contains(calls[0], "-hwaccel cuda") || strings.Contains(calls[1], "-hwaccel cuda") {
 		t.Fatalf("calls = %v, want hardware attempt then software decode", calls)
 	}
+	if !strings.Contains(calls[0], "-hwaccel_output_format cuda") || strings.Contains(calls[0], "-pix_fmt:v:0 yuv420p") {
+		t.Fatalf("hardware attempt is not zero-copy: %s", calls[0])
+	}
 	if !strings.Contains(calls[1], "-c:v:0 hevc_nvenc") || !strings.Contains(calls[1], "-cq:v:0 20") {
 		t.Fatalf("fallback changed encoder options: %s", calls[1])
+	}
+	if !strings.Contains(calls[1], "-pix_fmt:v:0 yuv420p") {
+		t.Fatalf("software fallback did not restore pixel format: %s", calls[1])
+	}
+	for _, call := range calls {
+		if !strings.Contains(call, "-fps_mode:v:0 passthrough") {
+			t.Fatalf("final encode does not preserve frame timing: %s", call)
+		}
+	}
+}
+
+func TestFullDecodeKeepsFramesOnGPUAndFallsBack(t *testing.T) {
+	client := New("ffmpeg", "ffprobe")
+	client.NVIDIA.NVDEC = true
+	var calls []string
+	client.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+		joined := strings.Join(args, " ")
+		calls = append(calls, joined)
+		if strings.Contains(joined, "-hwaccel cuda") {
+			return nil, []byte("hardware decode failed"), errors.New("exit status 1")
+		}
+		return nil, nil, nil
+	})
+
+	if err := client.FullDecode(context.Background(), "output.mp4", 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || !strings.Contains(calls[0], "-hwaccel cuda -hwaccel_output_format cuda") ||
+		strings.Contains(calls[1], "-hwaccel") {
+		t.Fatalf("calls = %v, want zero-copy validation then software decode", calls)
 	}
 }
 

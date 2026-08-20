@@ -1,7 +1,7 @@
 # vcompress
 
 Cross-platform (Windows/Linux/macOS) recursive video compressor built around FFmpeg/ffprobe.
-It converts selected legacy/delivery codecs to HEVC only when a short, representative SSIM analysis chooses an acceptable quality value from **20 → 18 → 16**, validates the finished output, and confirms that the file is meaningfully smaller. It uses NVIDIA NVENC and NVDEC automatically when runtime probes confirm that they work, and otherwise keeps the existing libx265/software path.
+It converts selected legacy/delivery codecs to HEVC only when a short, representative SSIM analysis chooses an acceptable quality value from **20 → 18 → 16**, validates the finished output, and confirms that the file is meaningfully smaller. It uses NVIDIA NVENC and NVDEC automatically when runtime probes confirm that they work, keeps NVDEC frames in GPU memory when passing them directly to NVENC, and otherwise keeps the existing libx265/software path.
 
 ## Safety policy
 
@@ -18,7 +18,8 @@ It converts selected legacy/delivery codecs to HEVC only when a short, represent
 - With `--keep-original`, publishes the validated output beside the source without replacing or deleting the source. Same-container output uses a `.hevc` suffix, such as `movie.hevc.mp4`.
 - Keeps the container for `.mp4`, `.m4v`, `.mov` and `.mkv`; any other input container is remuxed to `.mkv` next to the source, and the source is only removed after the new file has passed every check. If that `.mkv` path already exists, the file is skipped instead of overwritten.
 - Processing is intentionally sequential so one encode can use the machine without multiple simultaneous encodes exhausting CPU, GPU, RAM or VRAM.
-- At startup, performs real one-frame NVIDIA encode and decode probes rather than trusting FFmpeg's feature lists alone. A source codec that NVDEC cannot decode is retried with software decoding, and NVENC sample analysis falls back as a whole to libx265 if that format cannot be encoded by NVENC.
+- At startup, performs real one-frame NVIDIA encode and decode probes rather than trusting FFmpeg's feature lists alone. NVDEC-to-NVENC sample and final encodes retain CUDA frames in GPU memory instead of copying them through system memory. A source codec or pixel format that cannot use that path is retried with software decoding, and NVENC sample analysis falls back as a whole to libx265 if that format cannot be encoded by NVENC.
+- Preserves decoded frame timestamps with FFmpeg's passthrough frame-sync mode so variable-frame-rate input is not intentionally duplicated or dropped during encoding.
 
 ## Requirements
 
@@ -108,14 +109,16 @@ The log is written to `ffmpeg-compress.log` in the selected root directory.
 With `-keep-original`, `movie.mp4` produces `movie.hevc.mp4` and leaves
 `movie.mp4` unchanged. Inputs that require a container change, such as
 `movie.avi`, produce `movie.mkv` and likewise retain the source. An existing
-destination is never overwritten.
+destination is never overwritten. The startup line reports
+`decoder=nvdec-zero-copy` when both NVIDIA engines are active;
+`NVDEC-FALLBACK` records any file that must retry with software decoding.
 
 ## Automatic quality selection
 
 For each eligible file:
 
 1. Representative sample positions are spread through the video.
-2. Quality value 20 is sample-encoded with the selected encoder. x265 reports its reconstructed-frame SSIM directly; NVENC output is decoded and compared with the matching source interval using FFmpeg's `ssim` filter.
+2. Quality value 20 is sample-encoded with the selected encoder. x265 reports its reconstructed-frame SSIM directly; NVENC output is decoded and compared with the matching source interval using FFmpeg's `ssim` filter. NVDEC-to-NVENC sample encoding stays in GPU memory, while the SSIM comparison downloads decoded frames because `ssim` is a software filter.
 3. Quality value 20 is accepted when both average and worst-sample thresholds pass.
 4. Otherwise quality value 18 is tested, then 16. These are x265 CRF values or NVENC CQ values; they are measured independently and are not assumed to be equivalent.
 5. If none pass, the source is left unchanged.

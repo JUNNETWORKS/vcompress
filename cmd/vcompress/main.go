@@ -96,7 +96,10 @@ func run() int {
 	}
 	decoder := "software"
 	if client.NVIDIA.NVDEC {
-		decoder = "nvdec"
+		decoder = "nvdec-host-copy"
+		if encoder == "hevc_nvenc" {
+			decoder = "nvdec-zero-copy"
+		}
 	}
 	selector := quality.Selector{
 		Measurer: client, Logger: log, PreferredEncoder: encoder, FallbackEncoder: fallbackEncoder,
