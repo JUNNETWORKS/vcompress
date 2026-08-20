@@ -75,6 +75,34 @@ func TestJobAPIRejectsSecondActiveJob(t *testing.T) {
 	waitForState(t, manager, StateCompleted)
 }
 
+func TestJobAPIAcceptsFileAndDirectoryTargets(t *testing.T) {
+	received := make(chan config.Config, 1)
+	run := func(_ context.Context, cfg config.Config, _ job.Options) (job.Summary, error) {
+		received <- cfg
+		return job.Summary{FinishedAt: time.Now()}, nil
+	}
+	root := t.TempDir()
+	file := filepath.Join(root, "movie.mp4")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Targets = []string{root, file}
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	Handler(NewManager(context.Background(), run)).ServeHTTP(response, jsonRequest(http.MethodPost, "/api/jobs", body))
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	got := <-received
+	if len(got.Targets) != 2 || got.Targets[0] != root || got.Targets[1] != file {
+		t.Fatalf("targets = %v, want [%s %s]", got.Targets, root, file)
+	}
+}
+
 func TestWriteAPIRequiresJSONAndSameOrigin(t *testing.T) {
 	manager := NewManager(context.Background(), nil)
 	handler := Handler(manager)
@@ -96,12 +124,15 @@ func TestWriteAPIRequiresJSONAndSameOrigin(t *testing.T) {
 	}
 }
 
-func TestDirectoryListingReturnsOnlyDirectories(t *testing.T) {
+func TestDirectoryListingReturnsDirectoriesAndVideoFiles(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "folder"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "movie.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/api/directories?path="+root, nil)
@@ -110,7 +141,14 @@ func TestDirectoryListingReturnsOnlyDirectories(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), `"name":"folder"`) || strings.Contains(response.Body.String(), "movie.mp4") {
+	body := response.Body.String()
+	if !strings.Contains(body, `"name":"folder"`) || !strings.Contains(body, `"kind":"directory"`) {
+		t.Fatalf("listing = %s", body)
+	}
+	if !strings.Contains(body, `"name":"movie.mp4"`) || !strings.Contains(body, `"kind":"file"`) {
+		t.Fatalf("listing = %s", body)
+	}
+	if strings.Contains(body, "notes.txt") {
 		t.Fatalf("listing = %s", response.Body.String())
 	}
 }

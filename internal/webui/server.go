@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"vcompress/internal/config"
+	"vcompress/internal/discovery"
 )
 
 //go:embed static/*
@@ -202,6 +203,7 @@ func browserCommand(goos, address string) (string, []string) {
 type directoryEntry struct {
 	Name string `json:"name"`
 	Path string `json:"path"`
+	Kind string `json:"kind"`
 }
 
 type directoryListing struct {
@@ -241,17 +243,31 @@ func listDirectories(path string) (directoryListing, error) {
 	}
 	for _, entry := range entries {
 		entryPath := filepath.Join(abs, entry.Name())
-		isDir := entry.IsDir()
-		if !isDir && entry.Type()&os.ModeSymlink != 0 {
-			if target, err := os.Stat(entryPath); err == nil {
-				isDir = target.IsDir()
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			info, err = os.Stat(entryPath)
+			if err != nil {
+				continue
 			}
 		}
-		if isDir {
-			listing.Entries = append(listing.Entries, directoryEntry{Name: entry.Name(), Path: entryPath})
+		kind := ""
+		switch {
+		case info.IsDir():
+			kind = "directory"
+		case info.Mode().IsRegular() && discovery.IsVideoPath(entryPath):
+			kind = "file"
+		}
+		if kind != "" {
+			listing.Entries = append(listing.Entries, directoryEntry{Name: entry.Name(), Path: entryPath, Kind: kind})
 		}
 	}
 	sort.Slice(listing.Entries, func(i, j int) bool {
+		if listing.Entries[i].Kind != listing.Entries[j].Kind {
+			return listing.Entries[i].Kind == "directory"
+		}
 		return strings.ToLower(listing.Entries[i].Name) < strings.ToLower(listing.Entries[j].Name)
 	})
 	return listing, nil
