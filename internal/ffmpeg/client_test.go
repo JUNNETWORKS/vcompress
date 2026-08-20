@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"vcompress/internal/quality"
 )
@@ -13,6 +14,18 @@ type runnerFunc func(ctx context.Context, name string, args ...string) ([]byte, 
 
 func (f runnerFunc) Run(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
 	return f(ctx, name, args...)
+}
+
+type progressRunner struct {
+	runnerFunc
+	records [][2]string
+}
+
+func (r *progressRunner) RunProgress(ctx context.Context, name string, onProgress func(key, value string), args ...string) ([]byte, []byte, error) {
+	for _, record := range r.records {
+		onProgress(record[0], record[1])
+	}
+	return r.runnerFunc(ctx, name, args...)
 }
 
 func TestParseSSIM(t *testing.T) {
@@ -259,6 +272,49 @@ func TestEncodeRetriesWithoutNVDEC(t *testing.T) {
 		if !strings.Contains(call, "-fps_mode:v:0 passthrough") {
 			t.Fatalf("final encode does not preserve frame timing: %s", call)
 		}
+	}
+}
+
+func TestEncodeReportsMachineReadableProgress(t *testing.T) {
+	client := New("ffmpeg", "ffprobe")
+	var command string
+	client.Runner = &progressRunner{
+		runnerFunc: func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+			command = strings.Join(args, " ")
+			return nil, nil, nil
+		},
+		records: [][2]string{
+			{"out_time_us", "25000000"},
+			{"speed", "2.0x"},
+			{"progress", "continue"},
+			{"out_time_us", "50000000"},
+			{"progress", "end"},
+		},
+	}
+	var got []EncodeProgress
+	err := client.Encode(context.Background(), EncodeOptions{
+		Input: "source.mp4", Output: "output.mp4", PixFmt: "yuv420p", Preset: "slow",
+		Quality: 20, Encoder: "libx265", Duration: 50,
+		Progress: func(update EncodeProgress) { got = append(got, update) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(command, "-nostats -progress pipe:1") {
+		t.Fatalf("command does not request progress: %s", command)
+	}
+	if len(got) != 2 || got[0].ProcessedSeconds != 25 || got[0].Percent != 50 || got[0].Speed != "2.0x" {
+		t.Fatalf("progress = %+v", got)
+	}
+	if got[1].ProcessedSeconds != 50 || got[1].Percent != 100 {
+		t.Fatalf("final progress = %+v", got[1])
+	}
+}
+
+func TestEncodeProgressClampsTimestampsBeyondDuration(t *testing.T) {
+	got := encodeProgress(time.Now().Add(-time.Second), 10, map[string]string{"out_time_us": "12000000"}, false)
+	if got.Percent != 100 || got.ProcessedSeconds != 12 {
+		t.Fatalf("encodeProgress() = %+v", got)
 	}
 }
 

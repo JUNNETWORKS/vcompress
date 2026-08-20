@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"vcompress/internal/progress"
 )
 
 type fakeMeasurer struct {
@@ -164,6 +166,27 @@ func TestSelectRestartsWithFallbackEncoder(t *testing.T) {
 	for i := range want {
 		if m.calls[i] != want[i] {
 			t.Fatalf("calls = %v, want %v", m.calls, want)
+		}
+	}
+}
+
+func TestSelectReportsEachMeasuredSample(t *testing.T) {
+	m := &fakeMeasurer{scores: map[int][]Scores{20: {{VMAF: 99}, {VMAF: 98}}}}
+	var events []progress.Event
+	s := Selector{
+		Measurer: m, Metric: MetricVMAF, VMAFAverageMin: 95, VMAFWorstMin: 90,
+		SampleDuration: 1, SampleCount: 2, Preset: "slow",
+		Reporter: progress.ReporterFunc(func(event progress.Event) { events = append(events, event) }),
+	}
+	if _, err := s.Select(context.Background(), "x.mp4", 0, "yuv420p", 10); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Sample != 1 || events[1].Sample != 2 || events[0].SampleCount != 2 {
+		t.Fatalf("events = %+v", events)
+	}
+	for _, event := range events {
+		if event.Phase != progress.PhaseQuality || event.QualityValue != 20 || event.Path != "x.mp4" {
+			t.Fatalf("event = %+v", event)
 		}
 	}
 }

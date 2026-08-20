@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>vcompress</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">LOCAL VIDEO COMPRESSOR</p>
+      <h1>vcompress</h1>
+    </div>
+    <div id="stateBadge" class="state-badge idle">待機中</div>
+  </header>
+
+  <main>
+    <div id="notice" class="notice" hidden></div>
+
+    <section class="workspace">
+      <form id="jobForm" class="panel setup-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="step">01</p>
+            <h2>圧縮設定</h2>
+          </div>
+          <button id="resetButton" class="text-button" type="button">既定値に戻す</button>
+        </div>
+
+        <label class="field field-wide">
+          <span>対象ディレクトリ</span>
+          <span class="path-control">
+            <input id="root" name="root" type="text" autocomplete="off" placeholder="/path/to/videos" required>
+            <button id="browseButton" class="secondary-button" type="button">参照</button>
+          </span>
+        </label>
+
+        <div class="field-grid">
+          <label class="field">
+            <span>品質方式</span>
+            <select id="qualityMode" name="qualityMode">
+              <option value="auto">自動解析</option>
+              <option value="crf">libx265 CRF 指定</option>
+              <option value="cq">NVIDIA CQ 指定</option>
+            </select>
+          </label>
+          <label id="qualityValueField" class="field" hidden>
+            <span id="qualityValueLabel">品質値</span>
+            <input id="qualityValue" name="qualityValue" type="number" min="0" max="51" value="20">
+          </label>
+          <label id="metricField" class="field">
+            <span>自動解析メトリクス</span>
+            <select id="qualityMetric" name="qualityMetric">
+              <option value="vmaf">VMAF</option>
+              <option value="ssim">SSIM</option>
+              <option value="both">VMAF + SSIM</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="toggle-grid">
+          <label class="toggle">
+            <input id="keepOriginal" type="checkbox">
+            <span><strong>元ファイルを保持</strong><small>変換結果を隣に作成します</small></span>
+          </label>
+          <label class="toggle">
+            <input id="dryRun" type="checkbox">
+            <span><strong>Dry run</strong><small>書き込み前に対象だけ確認します</small></span>
+          </label>
+          <label class="toggle safety-toggle">
+            <input id="fullDecodeCheck" type="checkbox" checked>
+            <span><strong>完全デコード検証</strong><small>安全のため有効を推奨します</small></span>
+          </label>
+        </div>
+
+        <details class="advanced">
+          <summary>詳細設定</summary>
+          <div class="advanced-grid">
+            <label class="field"><span>最終プリセット</span><input id="preset" type="text"></label>
+            <label class="field"><span>解析プリセット</span><input id="analysisPreset" type="text"></label>
+            <label class="field"><span>VMAF 平均下限</span><input id="vmafAverage" type="number" min="0" max="100" step="0.1"></label>
+            <label class="field"><span>VMAF 最悪下限</span><input id="vmafWorst" type="number" min="0" max="100" step="0.1"></label>
+            <label class="field"><span>SSIM 平均下限</span><input id="ssimAverage" type="number" min="0" max="1" step="0.0001"></label>
+            <label class="field"><span>SSIM 最悪下限</span><input id="ssimWorst" type="number" min="0" max="1" step="0.0001"></label>
+            <label class="field"><span>サンプル秒数</span><input id="sampleDuration" type="number" min="0.1" step="0.1"></label>
+            <label class="field"><span>サンプル数</span><input id="sampleCount" type="number" min="1" max="5" step="1"></label>
+            <label class="field"><span>最小削減率 (%)</span><input id="minSavings" type="number" min="0" max="100" step="0.1"></label>
+            <label class="field"><span>FFmpeg</span><input id="ffmpegPath" type="text"></label>
+            <label class="field"><span>ffprobe</span><input id="ffprobePath" type="text"></label>
+          </div>
+        </details>
+
+        <button id="startButton" class="primary-button" type="submit">
+          <span>圧縮ジョブを開始</span><span aria-hidden="true">→</span>
+        </button>
+      </form>
+
+      <section class="panel progress-panel" aria-live="polite">
+        <div class="panel-heading">
+          <div>
+            <p class="step">02</p>
+            <h2>進捗</h2>
+          </div>
+          <div id="stopControls" class="stop-controls" hidden>
+            <button id="gracefulStop" class="secondary-button" type="button">このファイル後に停止</button>
+            <button id="cancelNow" class="danger-button" type="button">今すぐ停止</button>
+          </div>
+        </div>
+
+        <div class="current-card">
+          <div class="phase-line">
+            <span id="phaseLabel" class="phase-label">待機中</span>
+            <span id="percentLabel" class="percent-label">0%</span>
+          </div>
+          <p id="currentPath" class="current-path">ジョブを開始すると、ここに現在のファイルが表示されます。</p>
+          <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="progressBar" class="progress-bar"></div>
+          </div>
+          <div class="timing-row">
+            <span>現在の ETA <strong id="fileETA">—</strong></span>
+            <span>全体 ETA <strong id="batchETA">—</strong></span>
+            <span>速度 <strong id="speed">—</strong></span>
+          </div>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat primary-stat"><span>残り</span><strong id="remainingCount">0</strong></div>
+          <div class="stat"><span>候補</span><strong id="totalCount">0</strong></div>
+          <div class="stat"><span>変換</span><strong id="convertedCount">0</strong></div>
+          <div class="stat"><span>スキップ</span><strong id="skippedCount">0</strong></div>
+          <div class="stat"><span>失敗</span><strong id="failedCount">0</strong></div>
+          <div class="stat"><span>削減</span><strong id="savedBytes">0 B</strong></div>
+        </div>
+      </section>
+    </section>
+
+    <section class="panel results-panel">
+      <div class="panel-heading results-heading">
+        <div>
+          <p class="step">03</p>
+          <h2>ファイル別結果</h2>
+        </div>
+        <div class="filter-group" role="group" aria-label="結果フィルター">
+          <button class="filter active" data-filter="all" type="button">すべて</button>
+          <button class="filter" data-filter="skipped" type="button">スキップ</button>
+          <button class="filter" data-filter="failed" type="button">失敗</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>結果</th><th>ファイル</th><th>理由</th><th>サイズ</th><th>削減</th></tr></thead>
+          <tbody id="resultsBody"><tr class="empty-row"><td colspan="5">まだ結果はありません</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <details class="panel log-panel">
+      <summary>診断ログ <span id="logCount">0 行</span></summary>
+      <pre id="logs">ログはまだありません。</pre>
+    </details>
+  </main>
+
+  <dialog id="directoryDialog">
+    <form method="dialog" class="dialog-card">
+      <div class="dialog-heading"><h2>ディレクトリを選択</h2><button class="icon-button" value="cancel" aria-label="閉じる">×</button></div>
+      <div class="dialog-path"><button id="parentButton" class="secondary-button" type="button">↑ 上へ</button><code id="browserPath">/</code></div>
+      <div id="directoryList" class="directory-list"></div>
+      <div class="dialog-actions"><button id="selectDirectory" class="primary-button" type="button">このディレクトリを選択</button></div>
+    </form>
+  </dialog>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

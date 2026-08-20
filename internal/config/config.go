@@ -7,24 +7,24 @@ import (
 )
 
 type Config struct {
-	Root            string
-	Preset          string
-	AnalysisPreset  string
-	DirectCRF       *int
-	DirectCQ        *int
-	QualityMetric   string
-	VMAFAverageMin  float64
-	VMAFWorstMin    float64
-	SSIMAverageMin  float64
-	SSIMWorstMin    float64
-	SampleDuration  float64
-	SampleCount     int
-	MinSavings      float64
-	FullDecodeCheck bool
-	KeepOriginal    bool
-	DryRun          bool
-	FFmpegPath      string
-	FFprobePath     string
+	Root            string  `json:"root"`
+	Preset          string  `json:"preset"`
+	AnalysisPreset  string  `json:"analysis_preset"`
+	DirectCRF       *int    `json:"direct_crf"`
+	DirectCQ        *int    `json:"direct_cq"`
+	QualityMetric   string  `json:"quality_metric"`
+	VMAFAverageMin  float64 `json:"vmaf_average_min"`
+	VMAFWorstMin    float64 `json:"vmaf_worst_min"`
+	SSIMAverageMin  float64 `json:"ssim_average_min"`
+	SSIMWorstMin    float64 `json:"ssim_worst_min"`
+	SampleDuration  float64 `json:"sample_duration"`
+	SampleCount     int     `json:"sample_count"`
+	MinSavings      float64 `json:"min_savings"`
+	FullDecodeCheck bool    `json:"full_decode_check"`
+	KeepOriginal    bool    `json:"keep_original"`
+	DryRun          bool    `json:"dry_run"`
+	FFmpegPath      string  `json:"ffmpeg_path"`
+	FFprobePath     string  `json:"ffprobe_path"`
 }
 
 func Default() Config {

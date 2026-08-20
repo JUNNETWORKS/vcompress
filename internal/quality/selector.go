@@ -3,6 +3,8 @@ package quality
 import (
 	"context"
 	"fmt"
+
+	"vcompress/internal/progress"
 )
 
 var Candidates = []int{20, 18, 16}
@@ -41,6 +43,7 @@ type Selector struct {
 	Metric           Metric
 	VMAFAverageMin   float64
 	VMAFWorstMin     float64
+	Reporter         progress.Reporter
 }
 
 type Result struct {
@@ -115,6 +118,13 @@ func (s Selector) selectWithEncoder(ctx context.Context, input string, ordinal i
 		ssimSum := 0.0
 		ssimWorst := 1.0
 		for i, start := range starts {
+			progress.Emit(s.Reporter, progress.Event{
+				Phase:        progress.PhaseQuality,
+				Path:         input,
+				QualityValue: crf,
+				Sample:       i + 1,
+				SampleCount:  len(starts),
+			})
 			scores, err := s.Measurer.MeasureQuality(ctx, input, ordinal, pixFmt, s.Preset, encoder, s.Metric, start, effectiveDuration, crf)
 			if err != nil {
 				return Result{}, fmt.Errorf("encoder %s quality %d sample %d: %w", encoder, crf, i+1, err)
