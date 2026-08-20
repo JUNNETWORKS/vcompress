@@ -29,13 +29,15 @@
           <button id="resetButton" class="text-button" type="button">既定値に戻す</button>
         </div>
 
-        <label class="field field-wide">
-          <span>対象ディレクトリ</span>
-          <span class="path-control">
-            <input id="root" name="root" type="text" autocomplete="off" placeholder="/path/to/videos" required>
-            <button id="browseButton" class="secondary-button" type="button">参照</button>
-          </span>
-        </label>
+        <div class="target-field field-wide">
+          <div class="target-heading">
+            <div><strong>処理対象</strong><small>ディレクトリと動画ファイルを複数選択できます</small></div>
+            <button id="browseButton" class="secondary-button" type="button">対象を追加</button>
+          </div>
+          <div id="selectedTargets" class="target-list" aria-live="polite">
+            <p class="target-empty">対象が選択されていません</p>
+          </div>
+        </div>
 
         <div class="field-grid">
           <label class="field">
@@ -163,12 +165,19 @@
   </main>
 
   <dialog id="directoryDialog">
-    <form method="dialog" class="dialog-card">
-      <div class="dialog-heading"><h2>ディレクトリを選択</h2><button class="icon-button" value="cancel" aria-label="閉じる">×</button></div>
-      <div class="dialog-path"><button id="parentButton" class="secondary-button" type="button">↑ 上へ</button><code id="browserPath">/</code></div>
+    <div class="dialog-card">
+      <div class="dialog-heading"><div><h2>処理対象を選択</h2><p>パスを移動し、ディレクトリまたは動画ファイルを追加します。</p></div><button id="closeDirectoryDialog" class="icon-button" type="button" aria-label="閉じる">×</button></div>
+      <div class="dialog-path">
+        <button id="parentButton" class="secondary-button" type="button">↑ 上へ</button>
+        <input id="browserPath" type="text" autocomplete="off" aria-label="移動先のパス">
+        <button id="movePathButton" class="secondary-button" type="button">移動</button>
+      </div>
       <div id="directoryList" class="directory-list"></div>
-      <div class="dialog-actions"><button id="selectDirectory" class="primary-button" type="button">このディレクトリを選択</button></div>
-    </form>
+      <div class="dialog-actions">
+        <button id="selectDirectory" class="secondary-button" type="button">現在のディレクトリを追加</button>
+        <button id="finishSelection" class="primary-button" type="button">選択を完了</button>
+      </div>
+    </div>
   </dialog>
 
   <script src="/app.js" defer></script>

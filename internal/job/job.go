@@ -48,9 +48,10 @@ func Run(ctx context.Context, cfg config.Config, opts Options) (summary Summary,
 	if err := cfg.Normalize(); err != nil {
 		return summary, err
 	}
-	st, err := os.Stat(cfg.Root)
-	if err != nil || !st.IsDir() {
-		return summary, fmt.Errorf("not a directory: %s", cfg.Root)
+	targets := cfg.TargetPaths()
+	logDir, err := targetLogDirectory(targets[0])
+	if err != nil {
+		return summary, err
 	}
 	if _, err := exec.LookPath(cfg.FFmpegPath); err != nil {
 		return summary, fmt.Errorf("ffmpeg not found: %w", err)
@@ -63,7 +64,7 @@ func Run(ctx context.Context, cfg config.Config, opts Options) (summary Summary,
 	if console == nil {
 		console = io.Discard
 	}
-	logPath := filepath.Join(cfg.Root, "ffmpeg-compress.log")
+	logPath := filepath.Join(logDir, "ffmpeg-compress.log")
 	log, err := logging.New(logPath, console)
 	if err != nil {
 		return summary, fmt.Errorf("create log: %w", err)
@@ -99,10 +100,10 @@ func Run(ctx context.Context, cfg config.Config, opts Options) (summary Summary,
 	}
 	proc := processor.Processor{Config: cfg, Media: client, Selector: selector, Logger: log, Reporter: opts.Reporter}
 
-	log.Printf("START root=%s quality_mode=%s encoder=%s decoder=%s preset=%s analysis_preset=%s vmaf_avg_min=%.4f vmaf_worst_min=%.4f ssim_avg_min=%.6f ssim_worst_min=%.6f sample_duration=%.3fs sample_count=%d min_savings=%.1f%% full_decode_check=%t keep_original=%t dry_run=%t",
-		cfg.Root, qualityMode, encoder, decoder, cfg.Preset, cfg.AnalysisPreset, cfg.VMAFAverageMin, cfg.VMAFWorstMin, cfg.SSIMAverageMin, cfg.SSIMWorstMin, cfg.SampleDuration, cfg.SampleCount, cfg.MinSavings, cfg.FullDecodeCheck, cfg.KeepOriginal, cfg.DryRun)
+	log.Printf("START targets=%v quality_mode=%s encoder=%s decoder=%s preset=%s analysis_preset=%s vmaf_avg_min=%.4f vmaf_worst_min=%.4f ssim_avg_min=%.6f ssim_worst_min=%.6f sample_duration=%.3fs sample_count=%d min_savings=%.1f%% full_decode_check=%t keep_original=%t dry_run=%t",
+		targets, qualityMode, encoder, decoder, cfg.Preset, cfg.AnalysisPreset, cfg.VMAFAverageMin, cfg.VMAFWorstMin, cfg.SSIMAverageMin, cfg.SSIMWorstMin, cfg.SampleDuration, cfg.SampleCount, cfg.MinSavings, cfg.FullDecodeCheck, cfg.KeepOriginal, cfg.DryRun)
 	progress.Emit(opts.Reporter, progress.Event{Phase: progress.PhaseDiscovery, Message: "Discovering video candidates"})
-	paths, err := discovery.List(cfg.Root)
+	paths, err := discovery.ListTargets(targets)
 	if err != nil {
 		log.Printf("ERROR: recursive traversal failed: %v", err)
 		summary.Failed++
@@ -149,6 +150,20 @@ func Run(ctx context.Context, cfg config.Config, opts Options) (summary Summary,
 
 	log.Printf("DONE total=%d converted=%d skipped=%d failed=%d saved=%s", summary.Total, summary.Converted, summary.Skipped, summary.Failed, fsutil.HumanSize(summary.SavedBytes))
 	return summary, nil
+}
+
+func targetLogDirectory(target string) (string, error) {
+	info, err := os.Stat(target)
+	if err != nil {
+		return "", fmt.Errorf("inspect first target %q: %w", target, err)
+	}
+	if info.IsDir() {
+		return target, nil
+	}
+	if info.Mode().IsRegular() {
+		return filepath.Dir(target), nil
+	}
+	return "", fmt.Errorf("first target is not a regular file or directory: %s", target)
 }
 
 func RequiresLibvmaf(cfg config.Config) bool {

@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"path/filepath"
+	"reflect"
+	"testing"
+)
 
 func TestDefaultIsValidAfterRoot(t *testing.T) {
 	c := Default()
@@ -58,6 +62,31 @@ func TestNormalizeCanonicalizesQualityMetric(t *testing.T) {
 	}
 	if c.QualityMetric != "both" {
 		t.Fatalf("QualityMetric = %q, want both", c.QualityMetric)
+	}
+}
+
+func TestNormalizeAcceptsAndDeduplicatesTargets(t *testing.T) {
+	root := t.TempDir()
+	c := Default()
+	c.Targets = []string{root, filepath.Join(root, "."), filepath.Join(root, "movie.mp4")}
+	if err := c.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{root, filepath.Join(root, "movie.mp4")}
+	if !reflect.DeepEqual(c.TargetPaths(), want) {
+		t.Fatalf("TargetPaths() = %v, want %v", c.TargetPaths(), want)
+	}
+	got := c.TargetPaths()
+	got[0] = "changed"
+	if c.Targets[0] == "changed" {
+		t.Fatal("TargetPaths() returned the Config backing slice")
+	}
+}
+
+func TestNormalizeRequiresRootOrTargets(t *testing.T) {
+	c := Default()
+	if err := c.Normalize(); err == nil {
+		t.Fatal("Normalize() = nil, want missing target error")
 	}
 }
 

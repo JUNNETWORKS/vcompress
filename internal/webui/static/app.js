@@ -4,6 +4,7 @@ let defaults = null;
 let snapshot = null;
 let resultFilter = "all";
 let directoryState = null;
+const selectedTargets = new Map();
 
 const stateLabels = {
   idle: "待機中", running: "実行中", stopping: "停止待ち", completed: "完了",
@@ -14,6 +15,7 @@ const phaseLabels = {
   encode: "エンコード中", validation: "出力を検証中", publish: "安全に公開中",
 };
 const resultLabels = { converted: "変換", skipped: "スキップ", failed: "失敗", cancelled: "キャンセル" };
+const targetLabels = { directory: "DIR", file: "FILE", target: "TARGET" };
 
 async function request(path, options = {}) {
   const response = await fetch(path, options);
@@ -55,12 +57,55 @@ function updateQualityMode() {
   $("qualityValueLabel").textContent = mode === "cq" ? "CQ (0–51)" : "CRF (0–51)";
 }
 
+function addTarget(path, kind = "target") {
+  const normalized = path.trim();
+  if (!normalized || selectedTargets.has(normalized)) return false;
+  selectedTargets.set(normalized, kind);
+  renderSelectedTargets();
+  return true;
+}
+
+function renderSelectedTargets(disabled = snapshot?.state === "running" || snapshot?.state === "stopping") {
+  const list = $("selectedTargets");
+  list.replaceChildren();
+  if (!selectedTargets.size) {
+    const empty = document.createElement("p");
+    empty.className = "target-empty";
+    empty.textContent = "対象が選択されていません";
+    list.append(empty);
+    return;
+  }
+  for (const [path, kind] of selectedTargets) {
+    const row = document.createElement("div");
+    row.className = "target-item";
+    const badge = document.createElement("span");
+    badge.className = "target-kind";
+    badge.textContent = targetLabels[kind] || targetLabels.target;
+    const pathLabel = document.createElement("span");
+    pathLabel.className = "target-path";
+    pathLabel.textContent = path;
+    pathLabel.title = path;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "remove-target";
+    remove.textContent = "削除";
+    remove.disabled = disabled;
+    remove.addEventListener("click", () => {
+      selectedTargets.delete(path);
+      renderSelectedTargets();
+    });
+    row.append(badge, pathLabel, remove);
+    list.append(row);
+  }
+}
+
 function jobConfig() {
   const mode = $("qualityMode").value;
   const quality = Number.parseInt($("qualityValue").value, 10);
   return {
     ...defaults,
-    root: $("root").value.trim(),
+    root: "",
+    targets: [...selectedTargets.keys()],
     preset: $("preset").value.trim(),
     analysis_preset: $("analysisPreset").value.trim(),
     direct_crf: mode === "crf" ? quality : null,
@@ -103,6 +148,10 @@ function formatDuration(seconds) {
 function render(next) {
   snapshot = next;
   const running = next.state === "running" || next.state === "stopping";
+  if (!selectedTargets.size && next.targets?.length) {
+    for (const path of next.targets) selectedTargets.set(path, "target");
+  }
+  renderSelectedTargets(running);
   const badge = $("stateBadge");
   badge.className = `state-badge ${next.state}`;
   badge.textContent = stateLabels[next.state] || next.state;
@@ -118,7 +167,7 @@ function render(next) {
     phaseText += ` · 品質値 ${current.quality_value} · サンプル ${current.sample}/${current.sample_count}`;
   }
   $("phaseLabel").textContent = phaseText || "待機中";
-  $("currentPath").textContent = current.path || (next.root ? `${next.root} の処理待ち` : "ジョブを開始すると、ここに現在のファイルが表示されます。");
+  $("currentPath").textContent = current.path || (next.targets?.length ? `${next.targets.length} 件の対象を処理待ち` : (next.root ? `${next.root} の処理待ち` : "ジョブを開始すると、ここに現在のファイルが表示されます。"));
   const percent = next.state === "completed" ? 100 : (current.phase === "encode" ? Math.max(0, Math.min(100, current.percent || 0)) : 0);
   $("percentLabel").textContent = `${percent.toFixed(percent && percent < 10 ? 1 : 0)}%`;
   $("progressBar").style.width = `${percent}%`;
@@ -178,24 +227,51 @@ function renderResults(results) {
 
 async function openDirectory(path = "") {
   directoryState = await request(`/api/directories?path=${encodeURIComponent(path)}`);
-  $("browserPath").textContent = directoryState.path;
+  $("browserPath").value = directoryState.path;
   $("parentButton").disabled = !directoryState.parent;
   const list = $("directoryList");
   list.replaceChildren();
   if (!directoryState.entries.length) {
     const empty = document.createElement("p");
     empty.className = "empty-row";
-    empty.textContent = "子ディレクトリはありません";
+    empty.textContent = "選択できるディレクトリまたは動画ファイルはありません";
     list.append(empty);
   }
   for (const entry of directoryState.entries) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "directory-entry";
-    button.textContent = `▸  ${entry.name}`;
-    button.addEventListener("click", () => openDirectory(entry.path).catch((error) => setNotice(error.message)));
-    list.append(button);
+    const row = document.createElement("div");
+    row.className = "directory-entry";
+    let label;
+    if (entry.kind === "directory") {
+      label = document.createElement("button");
+      label.type = "button";
+      label.className = "entry-open";
+      label.textContent = `▸  ${entry.name}`;
+      label.title = `${entry.path} を開く`;
+      label.addEventListener("click", () => openDirectory(entry.path).catch((error) => setNotice(error.message)));
+    } else {
+      label = document.createElement("span");
+      label.className = "entry-label";
+      label.textContent = `●  ${entry.name}`;
+      label.title = entry.path;
+    }
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "secondary-button entry-add";
+    add.disabled = selectedTargets.has(entry.path);
+    add.textContent = add.disabled ? "追加済み" : "追加";
+    add.addEventListener("click", () => {
+      if (addTarget(entry.path, entry.kind)) {
+        add.disabled = true;
+        add.textContent = "追加済み";
+      }
+    });
+    row.append(label, add);
+    list.append(row);
   }
+}
+
+function moveToTypedPath() {
+  openDirectory($("browserPath").value.trim()).catch((error) => setNotice(error.message));
 }
 
 $("qualityMode").addEventListener("change", updateQualityMode);
@@ -203,6 +279,10 @@ $("resetButton").addEventListener("click", () => applyDefaults(defaults));
 $("jobForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   setNotice();
+  if (!selectedTargets.size) {
+    setNotice("処理するディレクトリまたは動画ファイルを1件以上選択してください。");
+    return;
+  }
   if (!$("fullDecodeCheck").checked && !confirm("完全デコード検証を無効にします。生成ファイルの安全確認が弱くなりますが、続行しますか？")) return;
   try {
     const next = await request("/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(jobConfig()) });
@@ -225,15 +305,22 @@ document.querySelectorAll(".filter").forEach((button) => button.addEventListener
 }));
 $("browseButton").addEventListener("click", async () => {
   try {
-    await openDirectory($("root").value.trim());
+    await openDirectory(directoryState?.path || "");
     $("directoryDialog").showModal();
   } catch (error) { setNotice(error.message); }
 });
 $("parentButton").addEventListener("click", () => openDirectory(directoryState.parent).catch((error) => setNotice(error.message)));
 $("selectDirectory").addEventListener("click", () => {
-  $("root").value = directoryState.path;
-  $("directoryDialog").close();
+  addTarget(directoryState.path, "directory");
 });
+$("movePathButton").addEventListener("click", moveToTypedPath);
+$("browserPath").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  moveToTypedPath();
+});
+$("closeDirectoryDialog").addEventListener("click", () => $("directoryDialog").close());
+$("finishSelection").addEventListener("click", () => $("directoryDialog").close());
 
 async function initialize() {
   try {

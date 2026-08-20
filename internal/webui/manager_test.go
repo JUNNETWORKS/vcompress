@@ -40,6 +40,27 @@ func TestManagerRejectsConcurrentJobAndPublishesResult(t *testing.T) {
 	}
 }
 
+func TestManagerPublishesNormalizedTargets(t *testing.T) {
+	release := make(chan struct{})
+	run := func(_ context.Context, _ config.Config, _ job.Options) (job.Summary, error) {
+		<-release
+		return job.Summary{FinishedAt: time.Now()}, nil
+	}
+	root := t.TempDir()
+	manager := NewManager(context.Background(), run)
+	cfg := config.Default()
+	cfg.Targets = []string{root, root}
+	if err := manager.Start(cfg); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := manager.Snapshot()
+	if len(snapshot.Targets) != 1 || snapshot.Targets[0] != root {
+		t.Fatalf("targets = %v, want [%s]", snapshot.Targets, root)
+	}
+	close(release)
+	waitForState(t, manager, StateCompleted)
+}
+
 func TestManagerStopsImmediately(t *testing.T) {
 	run := func(ctx context.Context, _ config.Config, _ job.Options) (job.Summary, error) {
 		<-ctx.Done()

@@ -80,3 +80,38 @@ func TestListReturnsVideoCandidates(t *testing.T) {
 		t.Fatalf("List() = %v, want %v", got, want)
 	}
 }
+
+func TestListTargetsCombinesDirectoriesAndFilesWithoutDuplicates(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested")
+	paths := []string{
+		filepath.Join(root, "a.mp4"),
+		filepath.Join(nested, "b.mkv"),
+	}
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := ListTargets([]string{root, nested, paths[0], paths[1]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, paths) {
+		t.Fatalf("ListTargets() = %v, want %v", got, paths)
+	}
+}
+
+func TestListTargetsRejectsUnsupportedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ListTargets([]string{path}); err == nil {
+		t.Fatal("ListTargets() = nil error, want unsupported file error")
+	}
+}

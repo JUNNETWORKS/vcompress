@@ -102,9 +102,11 @@ For a local WebUI instead of entering compression options on the command line:
 The server listens only on `127.0.0.1:8080` and opens the default browser.
 Use `vcompress web --no-open` to print the URL without opening it, or
 `vcompress web --port 18080` to select another localhost port. The page can
-browse server-side directories, configure the same quality and safety options,
-show candidate and remaining file counts, follow quality-analysis and encode
-progress, estimate completion time, and display per-file results.
+browse server-side directories, select multiple directories and individual
+video files, configure the same quality and safety options, show candidate and
+remaining file counts, follow quality-analysis and encode progress, estimate
+completion time, and display per-file results. Overlapping selections are
+deduplicated before processing.
 
 Only one job runs at a time, and files remain sequential within that job. The
 page offers immediate cancellation, which removes unpublished temporary output,
@@ -136,7 +138,8 @@ Important options:
 -ffprobe <path>
 ```
 
-The log is written to `ffmpeg-compress.log` in the selected root directory.
+The log is written to `ffmpeg-compress.log` in the first selected directory, or
+beside the first selected file when that target is a file.
 `-crf N` forces libx265 CRF `N`; `-cq N` requires working NVIDIA NVENC and
 uses CQ `N`. Both accept integers from 0 through 51, cannot be combined, and
 skip representative sample encoding and quality comparison. Lower values usually

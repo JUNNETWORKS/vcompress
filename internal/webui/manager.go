@@ -44,6 +44,7 @@ type Snapshot struct {
 	Revision        uint64         `json:"revision"`
 	State           State          `json:"state"`
 	Root            string         `json:"root,omitempty"`
+	Targets         []string       `json:"targets,omitempty"`
 	Current         progress.Event `json:"current"`
 	Summary         job.Summary    `json:"summary"`
 	BatchETASeconds float64        `json:"batch_eta_seconds,omitempty"`
@@ -94,7 +95,7 @@ func (m *Manager) Start(cfg config.Config) error {
 	m.currentStarted = time.Time{}
 	m.completedSeconds = 0
 	m.snapshot = Snapshot{
-		State: StateRunning, Root: cfg.Root,
+		State: StateRunning, Root: cfg.Root, Targets: cfg.TargetPaths(),
 		Summary: job.Summary{StartedAt: time.Now()},
 		Results: []FileResult{}, Logs: []string{},
 	}
@@ -261,6 +262,7 @@ func (m *Manager) publishLocked() {
 }
 
 func cloneSnapshot(snapshot Snapshot) Snapshot {
+	snapshot.Targets = append([]string{}, snapshot.Targets...)
 	snapshot.Results = append([]FileResult{}, snapshot.Results...)
 	snapshot.Logs = append([]string{}, snapshot.Logs...)
 	return snapshot

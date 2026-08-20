@@ -7,24 +7,25 @@ import (
 )
 
 type Config struct {
-	Root            string  `json:"root"`
-	Preset          string  `json:"preset"`
-	AnalysisPreset  string  `json:"analysis_preset"`
-	DirectCRF       *int    `json:"direct_crf"`
-	DirectCQ        *int    `json:"direct_cq"`
-	QualityMetric   string  `json:"quality_metric"`
-	VMAFAverageMin  float64 `json:"vmaf_average_min"`
-	VMAFWorstMin    float64 `json:"vmaf_worst_min"`
-	SSIMAverageMin  float64 `json:"ssim_average_min"`
-	SSIMWorstMin    float64 `json:"ssim_worst_min"`
-	SampleDuration  float64 `json:"sample_duration"`
-	SampleCount     int     `json:"sample_count"`
-	MinSavings      float64 `json:"min_savings"`
-	FullDecodeCheck bool    `json:"full_decode_check"`
-	KeepOriginal    bool    `json:"keep_original"`
-	DryRun          bool    `json:"dry_run"`
-	FFmpegPath      string  `json:"ffmpeg_path"`
-	FFprobePath     string  `json:"ffprobe_path"`
+	Root            string   `json:"root"`
+	Targets         []string `json:"targets,omitempty"`
+	Preset          string   `json:"preset"`
+	AnalysisPreset  string   `json:"analysis_preset"`
+	DirectCRF       *int     `json:"direct_crf"`
+	DirectCQ        *int     `json:"direct_cq"`
+	QualityMetric   string   `json:"quality_metric"`
+	VMAFAverageMin  float64  `json:"vmaf_average_min"`
+	VMAFWorstMin    float64  `json:"vmaf_worst_min"`
+	SSIMAverageMin  float64  `json:"ssim_average_min"`
+	SSIMWorstMin    float64  `json:"ssim_worst_min"`
+	SampleDuration  float64  `json:"sample_duration"`
+	SampleCount     int      `json:"sample_count"`
+	MinSavings      float64  `json:"min_savings"`
+	FullDecodeCheck bool     `json:"full_decode_check"`
+	KeepOriginal    bool     `json:"keep_original"`
+	DryRun          bool     `json:"dry_run"`
+	FFmpegPath      string   `json:"ffmpeg_path"`
+	FFprobePath     string   `json:"ffprobe_path"`
 }
 
 func Default() Config {
@@ -46,19 +47,49 @@ func Default() Config {
 }
 
 func (c *Config) Normalize() error {
-	if c.Root == "" {
-		return fmt.Errorf("directory is required")
+	if c.Root == "" && len(c.Targets) == 0 {
+		return fmt.Errorf("at least one target is required")
 	}
-	abs, err := filepath.Abs(c.Root)
-	if err != nil {
-		return fmt.Errorf("resolve root directory: %w", err)
+	if c.Root != "" {
+		abs, err := filepath.Abs(c.Root)
+		if err != nil {
+			return fmt.Errorf("resolve root directory: %w", err)
+		}
+		c.Root = filepath.Clean(abs)
 	}
-	c.Root = filepath.Clean(abs)
+	targets := make([]string, 0, len(c.Targets))
+	seen := make(map[string]struct{}, len(c.Targets))
+	for _, target := range c.Targets {
+		if strings.TrimSpace(target) == "" {
+			return fmt.Errorf("target path must not be empty")
+		}
+		abs, err := filepath.Abs(target)
+		if err != nil {
+			return fmt.Errorf("resolve target path %q: %w", target, err)
+		}
+		abs = filepath.Clean(abs)
+		if _, ok := seen[abs]; ok {
+			continue
+		}
+		seen[abs] = struct{}{}
+		targets = append(targets, abs)
+	}
+	c.Targets = targets
 	c.QualityMetric = strings.ToLower(strings.TrimSpace(c.QualityMetric))
 	if c.AnalysisPreset == "" {
 		c.AnalysisPreset = c.Preset
 	}
 	return c.Validate()
+}
+
+func (c Config) TargetPaths() []string {
+	if len(c.Targets) > 0 {
+		return append([]string(nil), c.Targets...)
+	}
+	if c.Root == "" {
+		return nil
+	}
+	return []string{c.Root}
 }
 
 func (c Config) Validate() error {
