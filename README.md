@@ -1,7 +1,7 @@
 # vcompress
 
 Cross-platform (Windows/Linux/macOS) recursive video compressor built around FFmpeg/ffprobe.
-By default, it converts selected legacy/delivery codecs to HEVC only when a short, representative SSIM analysis chooses an acceptable quality value from **20 → 18 → 16**, validates the finished output, and confirms that the file is meaningfully smaller. For large collections where the analysis time is undesirable, an explicit CRF or NVENC CQ can bypass only the SSIM selection step. It uses NVIDIA NVENC and NVDEC automatically when runtime probes confirm that they work, keeps NVDEC frames in GPU memory when passing them directly to NVENC, and otherwise keeps the existing libx265/software path.
+By default, it converts selected legacy/delivery codecs to HEVC only when a short, representative VMAF analysis chooses an acceptable quality value from **20 → 18 → 16**, validates the finished output, and confirms that the file is meaningfully smaller. SSIM can be selected instead, or both metrics can be required. For large collections where the analysis time is undesirable, an explicit CRF or NVENC CQ can bypass only the quality-selection step. It uses NVIDIA NVENC and NVDEC automatically when runtime probes confirm that they work, keeps NVDEC frames in GPU memory when passing them directly to NVENC, and otherwise keeps the existing libx265/software path.
 
 ## Safety policy
 
@@ -14,7 +14,7 @@ By default, it converts selected legacy/delivery codecs to HEVC only when a shor
 - Validates stream-type counts, chapters, duration, codec, pixel format, resolution, FPS and color signalling.
 - Performs a full decode check by default.
 - Keeps the source unless the result is at least 5% smaller by default.
-- `-crf` or `-cq` can explicitly bypass the pre-encode SSIM comparison; all
+- `-crf` or `-cq` can explicitly bypass the pre-encode quality comparison; all
   structural, full-decode, savings and replacement checks still apply.
 - Uses a same-directory temporary output. Unix replacement (Linux/macOS) is an atomic rename; Windows replacement uses `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`.
 - With `--keep-original`, publishes the validated output beside the source without replacing or deleting the source. Same-container output uses a `.hevc` suffix, such as `movie.hevc.mp4`.
@@ -28,6 +28,9 @@ By default, it converts selected legacy/delivery codecs to HEVC only when a shor
 - Go 1.26 to build (`mise` installs and pins it; `GOTOOLCHAIN=local` keeps builds identical to CI).
 - `ffmpeg` and `ffprobe` available in `PATH` at runtime.
 - FFmpeg must include the `libx265` encoder.
+- Automatic `vmaf` and `both` modes require FFmpeg's `libvmaf` filter. Use
+  `ffmpeg -filters` to check for it. Explicit `ssim`, `-crf`, and `-cq` modes do
+  not require libvmaf.
 - NVIDIA acceleration is optional. When available, FFmpeg must expose a working `hevc_nvenc` encoder and CUDA hardware acceleration, and the installed NVIDIA driver must be compatible with that FFmpeg build. `libx265` remains required as the safe fallback.
 
 ## Download
@@ -97,6 +100,9 @@ Important options:
 -cq 20
 -preset slow
 -analysis-preset slow
+-quality-metric vmaf
+-vmaf-average 95
+-vmaf-worst 90
 -ssim-average 0.995
 -ssim-worst 0.992
 -sample-duration 4
@@ -112,10 +118,17 @@ Important options:
 The log is written to `ffmpeg-compress.log` in the selected root directory.
 `-crf N` forces libx265 CRF `N`; `-cq N` requires working NVIDIA NVENC and
 uses CQ `N`. Both accept integers from 0 through 51, cannot be combined, and
-skip representative sample encoding and SSIM comparison. Lower values usually
+skip representative sample encoding and quality comparison. Lower values usually
 retain more detail and produce larger files. CRF and CQ values are not
 quality-equivalent, so `-cq` never silently falls back to libx265. With neither
-option, automatic SSIM selection remains enabled.
+option, automatic VMAF selection remains enabled.
+
+`-quality-metric` accepts `vmaf`, `ssim`, or `both`. The default `vmaf` mode
+requires average and worst representative-sample scores of 95 and 90. `ssim`
+uses the existing 0.995 average and 0.992 worst-sample thresholds. `both`
+accepts a quality value only when both sets of thresholds pass. Thresholds are
+configurable with `-vmaf-average`, `-vmaf-worst`, `-ssim-average`, and
+`-ssim-worst`; the worst threshold cannot exceed its average threshold.
 
 With `-keep-original`, `movie.mp4` produces `movie.hevc.mp4` and leaves
 `movie.mp4` unchanged. Inputs that require a container change, such as
@@ -129,18 +142,18 @@ destination is never overwritten. The startup line reports
 For each eligible file:
 
 1. Representative sample positions are spread through the video.
-2. Quality value 20 is sample-encoded with the selected encoder. x265 reports its reconstructed-frame SSIM directly; NVENC output is decoded and compared with the matching source interval using FFmpeg's `ssim` filter. NVDEC-to-NVENC sample encoding stays in GPU memory, while the SSIM comparison downloads decoded frames because `ssim` is a software filter.
+2. Quality value 20 is sample-encoded with the selected encoder. The encoded sample and matching source interval are decoded and compared with FFmpeg's `libvmaf` filter by default. `ssim` uses FFmpeg's `ssim` filter, while `both` evaluates the same encoded sample with both filters. NVDEC-to-NVENC sample encoding stays in GPU memory, while metric comparisons download decoded frames because both filters run in software.
 3. Quality value 20 is accepted when both average and worst-sample thresholds pass.
 4. Otherwise quality value 18 is tested, then 16. These are x265 CRF values or NVENC CQ values; they are measured independently and are not assumed to be equivalent.
 5. If none pass, the source is left unchanged.
 6. A complete encode is performed only after a quality value is selected.
 7. The complete output must pass structural/full-decode checks and the minimum size saving before publication.
 
-SSIM is an objective proxy, not a mathematical guarantee of perceptual transparency.
+VMAF and SSIM are objective proxies, not mathematical guarantees of perceptual transparency. The default VMAF model is `vmaf_v0.6.1`, supplied by libvmaf through FFmpeg.
 
 ## Direct quality selection
 
-To skip SSIM analysis and use libx265 CRF 20 for every eligible file:
+To skip automatic quality analysis and use libx265 CRF 20 for every eligible file:
 
 ```bash
 ./vcompress -crf 20 /path/to/videos

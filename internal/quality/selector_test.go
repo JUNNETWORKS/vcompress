@@ -7,21 +7,21 @@ import (
 )
 
 type fakeMeasurer struct {
-	scores map[int][]float64
-	calls  map[int]int
-	errCRF int
+	scores   map[int][]Scores
+	calls    map[int]int
+	errValue int
 }
 
-func (f *fakeMeasurer) MeasureSSIM(_ context.Context, _ string, _ int, _ string, _, _ string, _, _ float64, crf int) (float64, error) {
-	if crf == f.errCRF {
-		return 0, errors.New("boom")
+func (f *fakeMeasurer) MeasureQuality(_ context.Context, _ string, _ int, _ string, _, _ string, _ Metric, _, _ float64, value int) (Scores, error) {
+	if value == f.errValue {
+		return Scores{}, errors.New("boom")
 	}
 	if f.calls == nil {
 		f.calls = map[int]int{}
 	}
-	i := f.calls[crf]
-	f.calls[crf]++
-	return f.scores[crf][i], nil
+	i := f.calls[value]
+	f.calls[value]++
+	return f.scores[value][i], nil
 }
 
 type encoderMeasurer struct {
@@ -29,12 +29,12 @@ type encoderMeasurer struct {
 	calls       []string
 }
 
-func (m *encoderMeasurer) MeasureSSIM(_ context.Context, _ string, _ int, _, _, encoder string, _, _ float64, _ int) (float64, error) {
+func (m *encoderMeasurer) MeasureQuality(_ context.Context, _ string, _ int, _, _, encoder string, _ Metric, _, _ float64, _ int) (Scores, error) {
 	m.calls = append(m.calls, encoder)
 	if encoder == m.failEncoder {
-		return 0, errors.New("unsupported")
+		return Scores{}, errors.New("unsupported")
 	}
-	return 0.999, nil
+	return Scores{VMAF: 99, SSIM: 0.999}, nil
 }
 
 func TestSampleStarts(t *testing.T) {
@@ -47,53 +47,85 @@ func TestSampleStarts(t *testing.T) {
 	}
 }
 
-func TestSelectUsesHighestPassingCRF(t *testing.T) {
-	m := &fakeMeasurer{scores: map[int][]float64{
-		20: {0.994, 0.993, 0.994},
-		18: {0.997, 0.996, 0.997},
-		16: {0.999, 0.999, 0.999},
+func TestSelectUsesHighestPassingValueWithVMAF(t *testing.T) {
+	m := &fakeMeasurer{scores: map[int][]Scores{
+		20: {{VMAF: 94}, {VMAF: 93}, {VMAF: 94}},
+		18: {{VMAF: 97}, {VMAF: 96}, {VMAF: 97}},
+		16: {{VMAF: 99}, {VMAF: 99}, {VMAF: 99}},
 	}}
-	s := Selector{Measurer: m, AverageMin: 0.995, WorstMin: 0.992, SampleDuration: 4, SampleCount: 3, Preset: "slow"}
+	s := Selector{Measurer: m, Metric: MetricVMAF, VMAFAverageMin: 95, VMAFWorstMin: 90, SampleDuration: 4, SampleCount: 3, Preset: "slow"}
 	got, err := s.Select(context.Background(), "x.mp4", 0, "yuv420p", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.Found || got.Value != 18 || !got.SSIMCompared {
-		t.Fatalf("Select() = %+v, want CRF 18", got)
+	if !got.Found || got.Value != 18 || !got.Compared || got.Metric != MetricVMAF {
+		t.Fatalf("Select() = %+v, want value 18", got)
 	}
 	if m.calls[16] != 0 {
-		t.Fatal("CRF 16 should not be tested after CRF 18 passes")
+		t.Fatal("value 16 should not be tested after value 18 passes")
 	}
 }
 
-func TestFixedSelectorReturnsWithoutSSIMComparison(t *testing.T) {
+func TestSelectBothRequiresBothMetrics(t *testing.T) {
+	m := &fakeMeasurer{scores: map[int][]Scores{
+		20: {{VMAF: 97, SSIM: 0.990}},
+		18: {{VMAF: 96, SSIM: 0.996}},
+	}}
+	s := Selector{
+		Measurer: m, Metric: MetricBoth,
+		VMAFAverageMin: 95, VMAFWorstMin: 90,
+		SSIMAverageMin: 0.995, SSIMWorstMin: 0.992,
+		SampleDuration: 1, SampleCount: 1, Preset: "slow",
+	}
+	got, err := s.Select(context.Background(), "x.mp4", 0, "yuv420p", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Found || got.Value != 18 || got.VMAFAverage != 96 || got.SSIMAverage != 0.996 {
+		t.Fatalf("Select() = %+v, want both metrics to pass at 18", got)
+	}
+}
+
+func TestSelectSSIMModeRemainsAvailable(t *testing.T) {
+	m := &fakeMeasurer{scores: map[int][]Scores{20: {{SSIM: 0.996}}}}
+	s := Selector{Measurer: m, Metric: MetricSSIM, SSIMAverageMin: 0.995, SSIMWorstMin: 0.992, SampleDuration: 1, SampleCount: 1, Preset: "slow"}
+	got, err := s.Select(context.Background(), "x.mp4", 0, "yuv420p", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Found || got.SSIMAverage != 0.996 || got.Metric != MetricSSIM {
+		t.Fatalf("Select() = %+v", got)
+	}
+}
+
+func TestFixedSelectorReturnsWithoutComparison(t *testing.T) {
 	s := FixedSelector{Value: 23, Encoder: "libx265"}
 	got, err := s.Select(context.Background(), "x.mp4", 0, "yuv420p", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.Found || got.Value != 23 || got.Encoder != "libx265" || got.SSIMCompared {
+	if !got.Found || got.Value != 23 || got.Encoder != "libx265" || got.Compared {
 		t.Fatalf("Select() = %+v, want fixed unmeasured result", got)
 	}
 }
 
 func TestSelectReturnsNotFound(t *testing.T) {
-	m := &fakeMeasurer{scores: map[int][]float64{
-		20: {0.9}, 18: {0.91}, 16: {0.92},
+	m := &fakeMeasurer{scores: map[int][]Scores{
+		20: {{VMAF: 80}}, 18: {{VMAF: 85}}, 16: {{VMAF: 89}},
 	}}
-	s := Selector{Measurer: m, AverageMin: 0.995, WorstMin: 0.992, SampleDuration: 1, SampleCount: 1, Preset: "slow"}
+	s := Selector{Measurer: m, Metric: MetricVMAF, VMAFAverageMin: 95, VMAFWorstMin: 90, SampleDuration: 1, SampleCount: 1, Preset: "slow"}
 	got, err := s.Select(context.Background(), "x.mp4", 0, "yuv420p", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Found {
+	if got.Found || got.Metric != MetricVMAF {
 		t.Fatalf("Select() = %+v, want not found", got)
 	}
 }
 
 func TestSelectPropagatesMeasurementError(t *testing.T) {
-	m := &fakeMeasurer{scores: map[int][]float64{20: {0.9}}, errCRF: 20}
-	s := Selector{Measurer: m, AverageMin: 0.995, WorstMin: 0.992, SampleDuration: 1, SampleCount: 1, Preset: "slow"}
+	m := &fakeMeasurer{scores: map[int][]Scores{20: {{VMAF: 90}}}, errValue: 20}
+	s := Selector{Measurer: m, Metric: MetricVMAF, VMAFAverageMin: 95, VMAFWorstMin: 90, SampleDuration: 1, SampleCount: 1, Preset: "slow"}
 	if _, err := s.Select(context.Background(), "x.mp4", 0, "yuv420p", 10); err == nil {
 		t.Fatal("Select() error = nil, want error")
 	}
@@ -114,7 +146,7 @@ func TestSampleStartsShortVideoUsesZeroStart(t *testing.T) {
 func TestSelectRestartsWithFallbackEncoder(t *testing.T) {
 	m := &encoderMeasurer{failEncoder: "hevc_nvenc"}
 	s := Selector{
-		Measurer: m, AverageMin: 0.995, WorstMin: 0.992,
+		Measurer: m, Metric: MetricVMAF, VMAFAverageMin: 95, VMAFWorstMin: 90,
 		SampleDuration: 1, SampleCount: 2, Preset: "slow",
 		PreferredEncoder: "hevc_nvenc", FallbackEncoder: "libx265",
 	}

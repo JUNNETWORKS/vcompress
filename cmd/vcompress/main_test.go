@@ -9,6 +9,28 @@ import (
 	"vcompress/internal/ffmpeg"
 )
 
+func TestRequiresLibvmafOnlyForAutomaticVMAFModes(t *testing.T) {
+	value := 20
+	tests := []struct {
+		name string
+		cfg  config.Config
+		want bool
+	}{
+		{name: "VMAF", cfg: config.Config{QualityMetric: "vmaf"}, want: true},
+		{name: "both", cfg: config.Config{QualityMetric: "both"}, want: true},
+		{name: "SSIM", cfg: config.Config{QualityMetric: "ssim"}},
+		{name: "direct CRF", cfg: config.Config{QualityMetric: "vmaf", DirectCRF: &value}},
+		{name: "direct CQ", cfg: config.Config{QualityMetric: "both", DirectCQ: &value}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := requiresLibvmaf(tt.cfg); got != tt.want {
+				t.Fatalf("requiresLibvmaf() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSetOptionalInt(t *testing.T) {
 	var got *int
 	if err := setOptionalInt(&got)("0"); err != nil {
@@ -37,11 +59,11 @@ func TestBuildQualitySelectorDirectCRFForcesLibx265(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if encoder != "libx265" || result.Encoder != "libx265" || result.Value != 24 || result.SSIMCompared {
+	if encoder != "libx265" || result.Encoder != "libx265" || result.Value != 24 || result.Compared {
 		t.Fatalf("strategy = encoder=%s mode=%s result=%+v", encoder, mode, result)
 	}
-	if !strings.Contains(mode, "ssim-skipped") {
-		t.Fatalf("mode = %q, want SSIM skip marker", mode)
+	if !strings.Contains(mode, "analysis-skipped") {
+		t.Fatalf("mode = %q, want analysis skip marker", mode)
 	}
 }
 
@@ -65,7 +87,7 @@ func TestBuildQualitySelectorDirectCQRequiresNVENC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if encoder != "hevc_nvenc" || result.Encoder != "hevc_nvenc" || result.Value != 21 || result.SSIMCompared {
+	if encoder != "hevc_nvenc" || result.Encoder != "hevc_nvenc" || result.Value != 21 || result.Compared {
 		t.Fatalf("strategy = encoder=%s mode=%s result=%+v", encoder, mode, result)
 	}
 }
@@ -80,7 +102,7 @@ func TestBuildQualitySelectorAutomaticKeepsNVENCFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if encoder != "hevc_nvenc" || mode != "ssim-auto:20/18/16" {
+	if encoder != "hevc_nvenc" || mode != "vmaf-auto:20/18/16" {
 		t.Fatalf("encoder/mode = %q/%q", encoder, mode)
 	}
 }

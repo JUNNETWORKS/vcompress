@@ -27,6 +27,7 @@ func TestIntegrationMPEG4ToHEVC(t *testing.T) {
 	if err := client.HasLibx265(ctx); err != nil {
 		t.Skip(err)
 	}
+	libvmafErr := client.HasLibvmaf(ctx)
 
 	for _, tt := range []struct {
 		name         string
@@ -35,9 +36,12 @@ func TestIntegrationMPEG4ToHEVC(t *testing.T) {
 	}{
 		{name: "replace source"},
 		{name: "keep original", keepOriginal: true},
-		{name: "direct CRF without SSIM", directCRF: true},
+		{name: "direct CRF without analysis", directCRF: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			if !tt.directCRF && libvmafErr != nil {
+				t.Skip(libvmafErr)
+			}
 			dir := t.TempDir()
 			input := filepath.Join(dir, "source.mp4")
 			cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
@@ -54,13 +58,13 @@ func TestIntegrationMPEG4ToHEVC(t *testing.T) {
 			cfg.AnalysisPreset = "ultrafast"
 			cfg.SampleCount = 1
 			cfg.SampleDuration = 0.5
-			cfg.SSIMAverageMin = 0.90
-			cfg.SSIMWorstMin = 0.90
+			cfg.VMAFAverageMin = 0
+			cfg.VMAFWorstMin = 0
 			cfg.MinSavings = 0
 			cfg.KeepOriginal = tt.keepOriginal
 
 			log := logging.NewWriter(os.Stdout)
-			var sel Selector = quality.Selector{Measurer: client, Logger: log, AverageMin: cfg.SSIMAverageMin, WorstMin: cfg.SSIMWorstMin, SampleDuration: cfg.SampleDuration, SampleCount: cfg.SampleCount, Preset: cfg.AnalysisPreset}
+			var sel Selector = quality.Selector{Measurer: client, Logger: log, Metric: quality.MetricVMAF, VMAFAverageMin: cfg.VMAFAverageMin, VMAFWorstMin: cfg.VMAFWorstMin, SSIMAverageMin: cfg.SSIMAverageMin, SSIMWorstMin: cfg.SSIMWorstMin, SampleDuration: cfg.SampleDuration, SampleCount: cfg.SampleCount, Preset: cfg.AnalysisPreset}
 			if tt.directCRF {
 				sel = quality.FixedSelector{Value: 24, Encoder: "libx265"}
 			}

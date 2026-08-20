@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"vcompress/internal/media"
+	"vcompress/internal/quality"
 )
 
 type Client struct {
@@ -146,6 +147,19 @@ func (c *Client) HasLibx265(ctx context.Context) error {
 	return nil
 }
 
+func (c *Client) HasLibvmaf(ctx context.Context) error {
+	stdout, stderr, err := c.Runner.Run(ctx, c.FFmpeg, "-hide_banner", "-filters")
+	if err != nil {
+		return fmt.Errorf("ffmpeg -filters failed: %w: %s", err, strings.TrimSpace(string(stderr)))
+	}
+	for _, field := range strings.Fields(string(stdout) + "\n" + string(stderr)) {
+		if field == "libvmaf" {
+			return nil
+		}
+	}
+	return errors.New("automatic VMAF analysis requires an FFmpeg build with the libvmaf filter")
+}
+
 func (c *Client) DetectNVIDIA(ctx context.Context) NVIDIACapabilities {
 	caps := NVIDIACapabilities{
 		NVENCReason: "hevc_nvenc is not present in this FFmpeg build",
@@ -210,17 +224,14 @@ func commandFailure(operation string, err error, stderr []byte) string {
 }
 
 var (
-	x265SSIMRE   = regexp.MustCompile(`SSIM Mean Y:\s*([0-9]+(?:\.[0-9]+)?)`)
 	filterSSIMRE = regexp.MustCompile(`SSIM Y:\s*([0-9]+(?:\.[0-9]+)?)`)
+	vmafRE       = regexp.MustCompile(`VMAF score:\s*([-+]?[0-9]+(?:\.[0-9]+)?)`)
 )
 
 func ParseSSIM(stderr []byte) (float64, error) {
-	matches := x265SSIMRE.FindAllSubmatch(stderr, -1)
+	matches := filterSSIMRE.FindAllSubmatch(stderr, -1)
 	if len(matches) == 0 {
-		matches = filterSSIMRE.FindAllSubmatch(stderr, -1)
-	}
-	if len(matches) == 0 {
-		return 0, errors.New("SSIM Mean Y was not found")
+		return 0, errors.New("SSIM Y was not found")
 	}
 	v, err := strconv.ParseFloat(string(matches[len(matches)-1][1]), 64)
 	if err != nil {
@@ -229,42 +240,41 @@ func ParseSSIM(stderr []byte) (float64, error) {
 	return v, nil
 }
 
-func (c *Client) MeasureSSIM(ctx context.Context, input string, ordinal int, pixFmt, preset, encoder string, start, duration float64, crf int) (float64, error) {
-	if normalizeEncoder(encoder) == "hevc_nvenc" {
-		return c.measureNVENCSSIM(ctx, input, ordinal, pixFmt, preset, start, duration, crf)
+func ParseVMAF(stderr []byte) (float64, error) {
+	matches := vmafRE.FindAllSubmatch(stderr, -1)
+	if len(matches) == 0 {
+		return 0, errors.New("VMAF score was not found")
 	}
-	_, stderr, err := c.runWithNVDECFallback(ctx, "x265 sample decode", false, func(useNVDEC, keepFramesOnGPU bool) []string {
-		args := []string{"-hide_banner", "-y", "-loglevel", "error", "-ss", fmt.Sprintf("%.3f", start)}
-		args = appendHWAccel(args, useNVDEC, keepFramesOnGPU)
-		return append(args,
-			"-i", input, "-t", fmt.Sprintf("%.3f", duration),
-			"-map", fmt.Sprintf("0:v:%d", ordinal), "-an", "-sn", "-dn",
-			"-c:v", "libx265", "-preset", preset, "-crf", strconv.Itoa(crf), "-pix_fmt", pixFmt,
-			"-x265-params", "ssim=1:log-level=info", "-f", "null", "-",
-		)
-	})
+	v, err := strconv.ParseFloat(string(matches[len(matches)-1][1]), 64)
 	if err != nil {
-		return 0, fmt.Errorf("sample encode failed: %w: %s", err, tail(string(stderr), 12))
+		return 0, fmt.Errorf("parse VMAF: %w", err)
 	}
-	return ParseSSIM(stderr)
+	return v, nil
 }
 
-func (c *Client) measureNVENCSSIM(ctx context.Context, input string, ordinal int, pixFmt, preset string, start, duration float64, quality int) (float64, error) {
-	path, cleanup, err := temporaryMediaPath("vcompress-nvenc-sample-*.mkv")
+func (c *Client) MeasureQuality(ctx context.Context, input string, ordinal int, pixFmt, preset, encoder string, metric quality.Metric, start, duration float64, value int) (quality.Scores, error) {
+	path, cleanup, err := temporaryMediaPath("vcompress-quality-sample-*.mkv")
 	if err != nil {
-		return 0, err
+		return quality.Scores{}, err
 	}
 	defer cleanup()
 
-	_, stderr, err := c.runWithNVDECFallback(ctx, "NVENC sample decode", true, func(useNVDEC, keepFramesOnGPU bool) []string {
+	normalizedEncoder := normalizeEncoder(encoder)
+	_, stderr, err := c.runWithNVDECFallback(ctx, normalizedEncoder+" sample decode", normalizedEncoder == "hevc_nvenc", func(useNVDEC, keepFramesOnGPU bool) []string {
 		args := []string{"-hide_banner", "-y", "-loglevel", "error", "-ss", fmt.Sprintf("%.3f", start)}
 		args = appendHWAccel(args, useNVDEC, keepFramesOnGPU)
 		args = append(args,
 			"-i", input, "-t", fmt.Sprintf("%.3f", duration),
 			"-map", fmt.Sprintf("0:v:%d", ordinal), "-an", "-sn", "-dn",
-			"-c:v", "hevc_nvenc", "-preset", nvencPreset(preset), "-tune", "hq",
-			"-rc", "vbr", "-cq", strconv.Itoa(quality), "-b:v", "0",
 		)
+		if normalizedEncoder == "hevc_nvenc" {
+			args = append(args,
+				"-c:v", "hevc_nvenc", "-preset", nvencPreset(preset), "-tune", "hq",
+				"-rc", "vbr", "-cq", strconv.Itoa(value), "-b:v", "0",
+			)
+		} else {
+			args = append(args, "-c:v", "libx265", "-preset", preset, "-crf", strconv.Itoa(value))
+		}
 		if !keepFramesOnGPU {
 			args = append(args, "-pix_fmt", pixFmt)
 		}
@@ -272,24 +282,49 @@ func (c *Client) measureNVENCSSIM(ctx context.Context, input string, ordinal int
 		return args
 	})
 	if err != nil {
-		return 0, fmt.Errorf("NVENC sample encode failed: %w: %s", err, tail(string(stderr), 12))
+		return quality.Scores{}, fmt.Errorf("%s sample encode failed: %w: %s", normalizedEncoder, err, tail(string(stderr), 12))
 	}
 
-	_, stderr, err = c.runWithNVDECFallback(ctx, "SSIM comparison decode", false, func(useNVDEC, keepFramesOnGPU bool) []string {
+	scores := quality.Scores{}
+	if metric == quality.MetricVMAF || metric == quality.MetricBoth {
+		stderr, err = c.compareSample(ctx, input, path, ordinal, start, duration, "libvmaf=model=version=vmaf_v0.6.1:shortest=1", "VMAF")
+		if err != nil {
+			return quality.Scores{}, err
+		}
+		scores.VMAF, err = ParseVMAF(stderr)
+		if err != nil {
+			return quality.Scores{}, err
+		}
+	}
+	if metric == quality.MetricSSIM || metric == quality.MetricBoth {
+		stderr, err = c.compareSample(ctx, input, path, ordinal, start, duration, "ssim=shortest=1", "SSIM")
+		if err != nil {
+			return quality.Scores{}, err
+		}
+		scores.SSIM, err = ParseSSIM(stderr)
+		if err != nil {
+			return quality.Scores{}, err
+		}
+	}
+	return scores, nil
+}
+
+func (c *Client) compareSample(ctx context.Context, input, sample string, ordinal int, start, duration float64, filter, metricName string) ([]byte, error) {
+	_, stderr, err := c.runWithNVDECFallback(ctx, metricName+" comparison decode", false, func(useNVDEC, keepFramesOnGPU bool) []string {
 		args := []string{"-hide_banner", "-nostats", "-loglevel", "info", "-ss", fmt.Sprintf("%.3f", start), "-t", fmt.Sprintf("%.3f", duration)}
 		args = appendHWAccel(args, useNVDEC, keepFramesOnGPU)
 		args = append(args, "-i", input)
 		args = appendHWAccel(args, useNVDEC, keepFramesOnGPU)
 		return append(args,
-			"-i", path,
-			"-filter_complex", fmt.Sprintf("[0:v:%d]setpts=PTS-STARTPTS[ref];[1:v:0]setpts=PTS-STARTPTS[dist];[ref][dist]ssim=shortest=1", ordinal),
+			"-i", sample,
+			"-filter_complex", fmt.Sprintf("[0:v:%d]setpts=PTS-STARTPTS[ref];[1:v:0]setpts=PTS-STARTPTS[dist];[dist][ref]%s", ordinal, filter),
 			"-an", "-sn", "-dn", "-f", "null", "-",
 		)
 	})
 	if err != nil {
-		return 0, fmt.Errorf("NVENC sample SSIM comparison failed: %w: %s", err, tail(string(stderr), 12))
+		return nil, fmt.Errorf("%s comparison failed: %w: %s", metricName, err, tail(string(stderr), 12))
 	}
-	return ParseSSIM(stderr)
+	return stderr, nil
 }
 
 type EncodeOptions struct {

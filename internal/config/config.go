@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 )
 
 type Config struct {
@@ -11,6 +12,9 @@ type Config struct {
 	AnalysisPreset  string
 	DirectCRF       *int
 	DirectCQ        *int
+	QualityMetric   string
+	VMAFAverageMin  float64
+	VMAFWorstMin    float64
 	SSIMAverageMin  float64
 	SSIMWorstMin    float64
 	SampleDuration  float64
@@ -26,6 +30,9 @@ type Config struct {
 func Default() Config {
 	return Config{
 		Preset:          "slow",
+		QualityMetric:   "vmaf",
+		VMAFAverageMin:  95.0,
+		VMAFWorstMin:    90.0,
 		SSIMAverageMin:  0.995,
 		SSIMWorstMin:    0.992,
 		SampleDuration:  4.0,
@@ -47,6 +54,7 @@ func (c *Config) Normalize() error {
 		return fmt.Errorf("resolve root directory: %w", err)
 	}
 	c.Root = filepath.Clean(abs)
+	c.QualityMetric = strings.ToLower(strings.TrimSpace(c.QualityMetric))
 	if c.AnalysisPreset == "" {
 		c.AnalysisPreset = c.Preset
 	}
@@ -68,6 +76,15 @@ func (c Config) Validate() error {
 	}
 	if c.DirectCQ != nil && (*c.DirectCQ < 0 || *c.DirectCQ > 51) {
 		return fmt.Errorf("cq must be between 0 and 51")
+	}
+	if c.QualityMetric != "vmaf" && c.QualityMetric != "ssim" && c.QualityMetric != "both" {
+		return fmt.Errorf("quality-metric must be one of: vmaf, ssim, both")
+	}
+	if c.VMAFAverageMin < 0 || c.VMAFAverageMin > 100 {
+		return fmt.Errorf("vmaf-average must satisfy 0 <= value <= 100")
+	}
+	if c.VMAFWorstMin < 0 || c.VMAFWorstMin > c.VMAFAverageMin {
+		return fmt.Errorf("vmaf-worst must satisfy 0 <= value <= vmaf-average")
 	}
 	if c.SSIMAverageMin <= 0 || c.SSIMAverageMin > 1 {
 		return fmt.Errorf("ssim-average must satisfy 0 < value <= 1")
