@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -73,10 +74,12 @@ func runCLI(args []string) int {
 	flags.StringVar(&cfg.FFmpegPath, "ffmpeg", cfg.FFmpegPath, "path or executable name for ffmpeg")
 	flags.StringVar(&cfg.FFprobePath, "ffprobe", cfg.FFprobePath, "path or executable name for ffprobe")
 	flags.Usage = func() {
-		fmt.Fprintf(flags.Output(), "Usage: %s [options] DIRECTORY\n\n", filepath.Base(os.Args[0]))
-		flags.PrintDefaults()
+		printCLIUsage(flags.Output(), filepath.Base(os.Args[0]), flags)
 	}
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if flags.NArg() != 1 {
@@ -108,6 +111,14 @@ func runCLI(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func printCLIUsage(output io.Writer, program string, flags *flag.FlagSet) {
+	fmt.Fprintf(output, "Usage:\n  %s [options] DIRECTORY\n  %s web [options]\n\n", program, program)
+	fmt.Fprintln(output, "Commands:")
+	fmt.Fprintln(output, "  web    start the local WebUI")
+	fmt.Fprintln(output, "\nOptions:")
+	flags.PrintDefaults()
 }
 
 func requiresLibvmaf(cfg config.Config) bool {

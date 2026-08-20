@@ -1,13 +1,36 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"flag"
 	"strings"
 	"testing"
 
 	"vcompress/internal/config"
 	"vcompress/internal/ffmpeg"
 )
+
+func TestCLIUsageMentionsWebCommand(t *testing.T) {
+	var output bytes.Buffer
+	flags := flag.NewFlagSet("vcompress", flag.ContinueOnError)
+	flags.SetOutput(&output)
+
+	printCLIUsage(&output, "vcompress", flags)
+
+	usage := output.String()
+	for _, want := range []string{"vcompress web [options]", "web    start the local WebUI"} {
+		if !strings.Contains(usage, want) {
+			t.Fatalf("usage = %q, want %q", usage, want)
+		}
+	}
+}
+
+func TestCLIHelpReturnsSuccess(t *testing.T) {
+	if got := runCLI([]string{"-help"}); got != 0 {
+		t.Fatalf("runCLI(-help) = %d, want 0", got)
+	}
+}
 
 func TestRequiresLibvmafOnlyForAutomaticVMAFModes(t *testing.T) {
 	value := 20
