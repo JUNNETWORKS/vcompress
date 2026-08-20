@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"vcompress/internal/media"
 	"vcompress/internal/quality"
@@ -339,13 +340,31 @@ type EncodeOptions struct {
 	ColorTrc   string
 	ColorPrim  string
 	Encoder    string
+	Duration   float64
+	Progress   func(EncodeProgress)
+}
+
+type EncodeProgress struct {
+	ProcessedSeconds float64
+	TotalSeconds     float64
+	Percent          float64
+	ETASeconds       float64
+	Speed            string
 }
 
 func (c *Client) Encode(ctx context.Context, o EncodeOptions) error {
 	ord := strconv.Itoa(o.Ordinal)
 	encoder := normalizeEncoder(o.Encoder)
-	_, stderr, err := c.runWithNVDECFallback(ctx, "final encode decode", encoder == "hevc_nvenc", func(useNVDEC, keepFramesOnGPU bool) []string {
-		args := []string{"-hide_banner", "-y"}
+	started := time.Now()
+	progressValues := map[string]string{}
+	onProgress := func(key, value string) {
+		progressValues[key] = value
+		if key == "progress" && o.Progress != nil {
+			o.Progress(encodeProgress(started, o.Duration, progressValues, value == "end"))
+		}
+	}
+	_, stderr, err := c.runWithNVDECFallbackProgress(ctx, "final encode decode", encoder == "hevc_nvenc", onProgress, func(useNVDEC, keepFramesOnGPU bool) []string {
+		args := []string{"-hide_banner", "-y", "-nostats", "-progress", "pipe:1"}
 		args = appendHWAccel(args, useNVDEC, keepFramesOnGPU)
 		args = append(args, "-i", o.Input,
 			"-map", "0", "-map_metadata", "0", "-map_chapters", "0",
@@ -385,6 +404,43 @@ func (c *Client) Encode(ctx context.Context, o EncodeOptions) error {
 		return fmt.Errorf("ffmpeg encode/mux failed: %w: %s", err, tail(string(stderr), 20))
 	}
 	return nil
+}
+
+func encodeProgress(started time.Time, duration float64, values map[string]string, done bool) EncodeProgress {
+	processed := 0.0
+	for _, key := range []string{"out_time_us", "out_time_ms"} {
+		if raw := values[key]; raw != "" {
+			if microseconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
+				processed = float64(microseconds) / 1_000_000
+				break
+			}
+		}
+	}
+	percent := 0.0
+	if duration > 0 {
+		percent = processed / duration * 100
+	}
+	if done && duration > 0 {
+		processed = duration
+		percent = 100
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	eta := 0.0
+	if percent > 0 && percent < 100 {
+		eta = time.Since(started).Seconds() * (100 - percent) / percent
+	}
+	return EncodeProgress{
+		ProcessedSeconds: processed,
+		TotalSeconds:     duration,
+		Percent:          percent,
+		ETASeconds:       eta,
+		Speed:            values["speed"],
+	}
 }
 
 func (c *Client) FullDecode(ctx context.Context, path string, ordinal int) error {
@@ -447,6 +503,26 @@ func (c *Client) runWithNVDECFallback(ctx context.Context, operation string, kee
 		c.Logf("NVDEC-FALLBACK: %s failed; retrying with software decode | %s", operation, commandFailure(operation, err, stderr))
 	}
 	return c.Runner.Run(ctx, c.FFmpeg, args(false, false)...)
+}
+
+func (c *Client) runWithNVDECFallbackProgress(ctx context.Context, operation string, keepFramesOnGPU bool, onProgress func(key, value string), args func(useNVDEC, keepFramesOnGPU bool) []string) ([]byte, []byte, error) {
+	run := func(runArgs []string) ([]byte, []byte, error) {
+		if runner, ok := c.Runner.(ProgressRunner); ok {
+			return runner.RunProgress(ctx, c.FFmpeg, onProgress, runArgs...)
+		}
+		return c.Runner.Run(ctx, c.FFmpeg, runArgs...)
+	}
+	if !c.NVIDIA.NVDEC {
+		return run(args(false, false))
+	}
+	stdout, stderr, err := run(args(true, keepFramesOnGPU))
+	if err == nil || ctx.Err() != nil {
+		return stdout, stderr, err
+	}
+	if c.Logf != nil {
+		c.Logf("NVDEC-FALLBACK: %s failed; retrying with software decode | %s", operation, commandFailure(operation, err, stderr))
+	}
+	return run(args(false, false))
 }
 
 func temporaryMediaPath(pattern string) (string, func(), error) {

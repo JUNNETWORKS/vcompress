@@ -12,6 +12,7 @@ import (
 	"vcompress/internal/config"
 	ff "vcompress/internal/ffmpeg"
 	"vcompress/internal/media"
+	"vcompress/internal/progress"
 	"vcompress/internal/quality"
 )
 
@@ -21,6 +22,7 @@ type fakeMedia struct {
 	encodeCalls int
 	decodeCalls int
 	encodeOpts  ff.EncodeOptions
+	encodeHook  func()
 }
 
 func (f *fakeMedia) Probe(_ context.Context, path string) (media.Info, error) {
@@ -33,6 +35,9 @@ func (f *fakeMedia) Probe(_ context.Context, path string) (media.Info, error) {
 func (f *fakeMedia) Encode(_ context.Context, o ff.EncodeOptions) error {
 	f.encodeCalls++
 	f.encodeOpts = o
+	if f.encodeHook != nil {
+		f.encodeHook()
+	}
 	return os.WriteFile(o.Output, make([]byte, 500), 0o644)
 }
 
@@ -282,5 +287,70 @@ func TestProcessKeepsSourceWhenSavingsBelowThreshold(t *testing.T) {
 	}
 	if st.Size() != 1000 {
 		t.Fatalf("source size = %d, want 1000", st.Size())
+	}
+}
+
+func TestProcessReportsPhasesAndRichResult(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "source.mp4")
+	if err := os.WriteFile(path, make([]byte, 1000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := &fakeMedia{probe: baseInfo("h264"), outputProbe: baseInfo("hevc")}
+	var phases []progress.Phase
+	p := Processor{
+		Config: config.Default(), Media: m,
+		Selector: fakeSelector{result: quality.Result{Found: true, Value: 20, Encoder: "libx265"}},
+		Reporter: progress.ReporterFunc(func(event progress.Event) { phases = append(phases, event.Phase) }),
+	}
+	got := p.Process(context.Background(), path)
+	want := []progress.Phase{
+		progress.PhaseProbe, progress.PhaseQuality, progress.PhaseEncode,
+		progress.PhaseValidation, progress.PhasePublish,
+	}
+	if fmt.Sprint(phases) != fmt.Sprint(want) {
+		t.Fatalf("phases = %v, want %v", phases, want)
+	}
+	if got.Path != path || got.OutputPath != path || got.OriginalBytes != 1000 || got.OutputBytes != 500 || got.Reason != "converted" {
+		t.Fatalf("result = %+v", got)
+	}
+	if m.encodeOpts.Duration != 60 {
+		t.Fatalf("encode duration = %v, want 60", m.encodeOpts.Duration)
+	}
+}
+
+func TestProcessCancellationAfterEncodeDoesNotPublish(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "source.mp4")
+	original := bytes.Repeat([]byte{0x44}, 1000)
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m := &fakeMedia{probe: baseInfo("h264"), outputProbe: baseInfo("hevc"), encodeHook: cancel}
+	p := Processor{
+		Config: config.Default(), Media: m,
+		Selector: fakeSelector{result: quality.Result{Found: true, Value: 20, Encoder: "libx265"}},
+	}
+	got := p.Process(ctx, path)
+	if got.Status != StatusCancelled {
+		t.Fatalf("result = %+v, want cancelled", got)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, original) {
+		t.Fatal("source changed after cancellation")
+	}
+	if m.decodeCalls != 0 {
+		t.Fatalf("decode calls = %d, want 0", m.decodeCalls)
+	}
+	temps, err := filepath.Glob(filepath.Join(dir, ".source.ffmpeg-compressing-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(temps) != 0 {
+		t.Fatalf("temporary outputs remain: %v", temps)
 	}
 }

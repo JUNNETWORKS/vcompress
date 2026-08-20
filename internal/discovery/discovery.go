@@ -32,3 +32,15 @@ func Walk(root string, fn func(string) error) error {
 		return fn(path)
 	})
 }
+
+func List(root string) ([]string, error) {
+	var paths []string
+	err := Walk(root, func(path string) error {
+		paths = append(paths, path)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return paths, nil
+}

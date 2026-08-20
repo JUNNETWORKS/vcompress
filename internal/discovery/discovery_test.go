@@ -54,3 +54,29 @@ func TestWalkRecurses(t *testing.T) {
 		t.Fatalf("Walk() = %v, want %v", got, want)
 	}
 }
+
+func TestListReturnsVideoCandidates(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a.mp4", "b.txt", "nested/c.MOV"} {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range got {
+		got[i] = filepath.Base(got[i])
+	}
+	sort.Strings(got)
+	want := []string{"a.mp4", "c.MOV"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("List() = %v, want %v", got, want)
+	}
+}

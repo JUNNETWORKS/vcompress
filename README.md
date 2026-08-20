@@ -93,6 +93,27 @@ Windows PowerShell:
 .\vcompress.exe 'D:\Videos'
 ```
 
+For a local WebUI instead of entering compression options on the command line:
+
+```bash
+./vcompress web
+```
+
+The server listens only on `127.0.0.1:8080` and opens the default browser.
+Use `vcompress web --no-open` to print the URL without opening it, or
+`vcompress web --port 18080` to select another localhost port. The page can
+browse server-side directories, configure the same quality and safety options,
+show candidate and remaining file counts, follow quality-analysis and encode
+progress, estimate completion time, and display per-file results.
+
+Only one job runs at a time, and files remain sequential within that job. The
+page offers immediate cancellation, which removes unpublished temporary output,
+and a graceful stop after the current file has completed validation and safe
+publication. Closing or reloading the browser does not stop processing; the
+page reconnects to the in-memory job state. Job history is not persisted across
+server restarts. The WebUI has no authentication because it is deliberately
+localhost-only; do not proxy or otherwise expose it to a network.
+
 Important options:
 
 ```text
@@ -215,6 +236,9 @@ internal/media/         media model and validation helpers
 internal/quality/       representative sampling and quality 20/18/16 selection
 internal/processor/     per-file orchestration and safety gates
 internal/logging/       console + file logger
+internal/job/           shared CLI/Web batch orchestration and counters
+internal/progress/      typed processing and FFmpeg progress events
+internal/webui/         localhost server, single-job state and embedded UI
 ```
 
 ## Development plans (ExecPlans)
