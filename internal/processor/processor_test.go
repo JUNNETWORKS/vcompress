@@ -3,8 +3,10 @@ package processor
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"vcompress/internal/config"
@@ -45,6 +47,16 @@ func (f fakeSelector) Select(context.Context, string, int, string, float64) (qua
 	return f.result, nil
 }
 
+type fakeLogger struct{ lines []string }
+
+func (l *fakeLogger) Printf(format string, args ...any) {
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+func (l *fakeLogger) String() string {
+	return strings.Join(l.lines, "\n")
+}
+
 func baseInfo(codec string) media.Info {
 	return media.Info{
 		Video:    media.VideoInfo{CodecName: codec, PixFmt: "yuv420p", Width: 1920, Height: 1080, AvgFrameRate: "30/1", Ordinal: 0},
@@ -70,10 +82,37 @@ func TestProcessDryRunDoesNotEncode(t *testing.T) {
 	m := &fakeMedia{probe: baseInfo("h264")}
 	c := config.Default()
 	c.DryRun = true
-	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, CRF: 20, Average: 0.999, Worst: 0.998, Encoder: "hevc_nvenc"}}}
+	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, Value: 20, Average: 0.999, Worst: 0.998, Encoder: "hevc_nvenc", SSIMCompared: true}}}
 	got := p.Process(context.Background(), path)
 	if got.Status != StatusSkipped || m.encodeCalls != 0 {
 		t.Fatalf("result=%+v encodeCalls=%d", got, m.encodeCalls)
+	}
+}
+
+func TestProcessDryRunDirectQualitySkipsSSIMLogging(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "source.mp4")
+	if err := os.WriteFile(path, make([]byte, 1000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := &fakeMedia{probe: baseInfo("h264")}
+	c := config.Default()
+	c.DryRun = true
+	log := &fakeLogger{}
+	p := Processor{
+		Config: c, Media: m, Logger: log,
+		Selector: quality.FixedSelector{Value: 24, Encoder: "libx265"},
+	}
+	got := p.Process(context.Background(), path)
+	if got.Status != StatusSkipped || m.encodeCalls != 0 {
+		t.Fatalf("result=%+v encodeCalls=%d", got, m.encodeCalls)
+	}
+	text := log.String()
+	if !strings.Contains(text, "QUALITY-DIRECT: encoder=libx265 crf=24 ssim=skipped") {
+		t.Fatalf("log does not describe direct quality:\n%s", text)
+	}
+	if strings.Contains(text, "avg_ssim") || strings.Contains(text, "QUALITY-TEST") {
+		t.Fatalf("log claims SSIM comparison in direct mode:\n%s", text)
 	}
 }
 
@@ -88,7 +127,7 @@ func TestProcessReplacesAfterValidation(t *testing.T) {
 	m := &fakeMedia{probe: in, outputProbe: out}
 	c := config.Default()
 	c.MinSavings = 1
-	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, CRF: 20, Average: 0.999, Worst: 0.998, Encoder: "hevc_nvenc"}}}
+	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, Value: 20, Average: 0.999, Worst: 0.998, Encoder: "hevc_nvenc", SSIMCompared: true}}}
 	got := p.Process(context.Background(), path)
 	if got.Status != StatusConverted || got.SavedBytes != 500 {
 		t.Fatalf("result=%+v", got)
@@ -125,7 +164,7 @@ func TestProcessKeepOriginalPublishesBesideSource(t *testing.T) {
 	c := config.Default()
 	c.KeepOriginal = true
 	c.MinSavings = 1
-	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, CRF: 20, Average: 0.999, Worst: 0.998}}}
+	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, Value: 20, Average: 0.999, Worst: 0.998, Encoder: "libx265", SSIMCompared: true}}}
 
 	got := p.Process(context.Background(), path)
 	if got.Status != StatusConverted || got.SavedBytes != 0 {
@@ -168,7 +207,7 @@ func TestProcessKeepOriginalRefusesExistingOutput(t *testing.T) {
 	m := &fakeMedia{probe: baseInfo("h264")}
 	c := config.Default()
 	c.KeepOriginal = true
-	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, CRF: 20}}}
+	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, Value: 20, Encoder: "libx265", SSIMCompared: true}}}
 
 	got := p.Process(context.Background(), path)
 	if got.Status != StatusSkipped || m.encodeCalls != 0 {
@@ -187,7 +226,7 @@ func TestProcessSkipsHDRWithoutEncoding(t *testing.T) {
 	in := baseInfo("h264")
 	in.Video.HDR = true
 	m := &fakeMedia{probe: in}
-	p := Processor{Config: config.Default(), Media: m, Selector: fakeSelector{result: quality.Result{Found: true, CRF: 20}}}
+	p := Processor{Config: config.Default(), Media: m, Selector: fakeSelector{result: quality.Result{Found: true, Value: 20, Encoder: "libx265", SSIMCompared: true}}}
 	got := p.Process(context.Background(), filepath.Join(t.TempDir(), "source.mp4"))
 	if got.Status != StatusSkipped || m.encodeCalls != 0 {
 		t.Fatalf("result=%+v encodeCalls=%d", got, m.encodeCalls)
@@ -207,7 +246,7 @@ func TestProcessKeepsSourceWhenValidationFails(t *testing.T) {
 	m := &fakeMedia{probe: in, outputProbe: out}
 	c := config.Default()
 	c.MinSavings = 0
-	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, CRF: 20, Average: 0.999, Worst: 0.998}}}
+	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, Value: 20, Average: 0.999, Worst: 0.998, Encoder: "libx265", SSIMCompared: true}}}
 	got := p.Process(context.Background(), path)
 	if got.Status != StatusFailed {
 		t.Fatalf("result=%+v, want failed", got)
@@ -232,7 +271,7 @@ func TestProcessKeepsSourceWhenSavingsBelowThreshold(t *testing.T) {
 	m := &fakeMedia{probe: in, outputProbe: out}
 	c := config.Default()
 	c.MinSavings = 60 // fake encoder creates 500-byte output => 50% saving only.
-	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, CRF: 20, Average: 0.999, Worst: 0.998}}}
+	p := Processor{Config: c, Media: m, Selector: fakeSelector{result: quality.Result{Found: true, Value: 20, Average: 0.999, Worst: 0.998, Encoder: "libx265", SSIMCompared: true}}}
 	got := p.Process(context.Background(), path)
 	if got.Status != StatusSkipped {
 		t.Fatalf("result=%+v, want skipped", got)

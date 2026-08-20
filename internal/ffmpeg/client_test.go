@@ -190,7 +190,7 @@ func TestEncodeRetriesWithoutNVDEC(t *testing.T) {
 	})
 
 	err := client.Encode(context.Background(), EncodeOptions{
-		Input: "source.mp4", Output: "output.mp4", PixFmt: "yuv420p", Preset: "slow", CRF: 20, Encoder: "hevc_nvenc",
+		Input: "source.mp4", Output: "output.mp4", PixFmt: "yuv420p", Preset: "slow", Quality: 20, Encoder: "hevc_nvenc",
 	})
 	if err != nil {
 		t.Fatal(err)

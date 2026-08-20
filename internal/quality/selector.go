@@ -28,11 +28,21 @@ type Selector struct {
 }
 
 type Result struct {
-	CRF     int
-	Average float64
-	Worst   float64
-	Found   bool
+	Value        int
+	Average      float64
+	Worst        float64
+	Found        bool
+	Encoder      string
+	SSIMCompared bool
+}
+
+type FixedSelector struct {
+	Value   int
 	Encoder string
+}
+
+func (s FixedSelector) Select(context.Context, string, int, string, float64) (Result, error) {
+	return Result{Value: s.Value, Found: true, Encoder: s.Encoder}, nil
 }
 
 func SampleStarts(duration float64, count int, sampleDuration float64) []float64 {
@@ -98,7 +108,7 @@ func (s Selector) selectWithEncoder(ctx context.Context, input string, ordinal i
 		}
 		avg := sum / float64(len(starts))
 		if avg >= s.AverageMin && worst >= s.WorstMin {
-			return Result{CRF: crf, Average: avg, Worst: worst, Found: true, Encoder: encoder}, nil
+			return Result{Value: crf, Average: avg, Worst: worst, Found: true, Encoder: encoder, SSIMCompared: true}, nil
 		}
 		if s.Logger != nil {
 			s.Logger.Printf("QUALITY-REJECT: encoder=%s value=%d avg_ssim=%.6f worst_ssim=%.6f thresholds=%.6f/%.6f", encoder, crf, avg, worst, s.AverageMin, s.WorstMin)

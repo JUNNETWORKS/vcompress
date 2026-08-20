@@ -58,11 +58,22 @@ func TestSelectUsesHighestPassingCRF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.Found || got.CRF != 18 {
+	if !got.Found || got.Value != 18 || !got.SSIMCompared {
 		t.Fatalf("Select() = %+v, want CRF 18", got)
 	}
 	if m.calls[16] != 0 {
 		t.Fatal("CRF 16 should not be tested after CRF 18 passes")
+	}
+}
+
+func TestFixedSelectorReturnsWithoutSSIMComparison(t *testing.T) {
+	s := FixedSelector{Value: 23, Encoder: "libx265"}
+	got, err := s.Select(context.Background(), "x.mp4", 0, "yuv420p", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Found || got.Value != 23 || got.Encoder != "libx265" || got.SSIMCompared {
+		t.Fatalf("Select() = %+v, want fixed unmeasured result", got)
 	}
 }
 
